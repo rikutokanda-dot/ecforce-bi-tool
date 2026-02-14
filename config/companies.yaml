@@ -1,0 +1,12 @@
+# 会社情報設定
+# key: BigQueryデータセット/テーブルのプレフィックス
+# display_name: UI表示名
+companies:
+  - key: yakuin
+    display_name: 薬院
+  - key: generic
+    display_name: ジェネリック
+  - key: neus
+    display_name: ネウス
+  - key: clinic
+    display_name: クリニック

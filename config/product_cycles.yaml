@@ -1,0 +1,29 @@
+# 商品発送サイクル設定
+# 会社キーごとに、デフォルト値と商品別の設定を記載
+# cycle1: 初回から2回目までの日数
+# cycle2: 3回目以降の間隔日数
+# ※Google Sheetsの「商品名」シートの内容をここに転記してください
+
+yakuin:
+  default:
+    cycle1: 30
+    cycle2: 30
+  products: []
+
+generic:
+  default:
+    cycle1: 30
+    cycle2: 30
+  products: []
+
+neus:
+  default:
+    cycle1: 30
+    cycle2: 30
+  products: []
+
+clinic:
+  default:
+    cycle1: 30
+    cycle2: 30
+  products: []
