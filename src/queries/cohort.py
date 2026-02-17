@@ -199,11 +199,18 @@ def build_aggregate_cohort_sql(
 
 
 def build_max_date_sql(company_key: str) -> str:
-    """データの最終日を取得するSQL."""
+    """出荷済み受注データの最終日を取得するSQL.
+
+    定期受注_作成日時のMAXだと未出荷の定期受注も含むため
+    実際のデータカットオフ日にならない。
+    shipped & completed の受注の最新日をカットオフとして使用する。
+    """
     table = get_table_ref(company_key)
     return f"""
     SELECT MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS max_date
     FROM {table}
+    WHERE `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+      AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
     """
 
 
@@ -247,4 +254,164 @@ def build_upsell_sql(
       COUNT(DISTINCT t.customer_id) AS upsell_count
     FROM from_customers f
     LEFT JOIN to_customers t ON f.customer_id = t.customer_id
+    """
+
+
+def build_upsell_rate_sql(
+    company_key: str,
+    normal_product_name: str,
+    upsell_product_name: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    """アップセル率計算SQL.
+
+    アップセル商品が実際に購入されている期間を自動検出し、
+    その期間中の通常商品とアップセル商品の1回目購入数から
+    アップセル切替率を算出する。
+
+    アップセル率 = upsell_1回目購入数 / (normal_1回目購入数 + upsell_1回目購入数)
+    """
+    table = get_table_ref(company_key)
+
+    # ユーザー日付フィルタとの交差期間計算
+    period_start_expr = "p.period_start"
+    period_end_expr = "p.period_end"
+    if date_from:
+        period_start_expr = f"GREATEST(p.period_start, '{date_from}')"
+    if date_to:
+        period_end_expr = f"LEAST(p.period_end, '{date_to}')"
+
+    return f"""
+    WITH
+    upsell_period AS (
+      SELECT
+        MIN(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_start,
+        MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_end
+      FROM {table}
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{upsell_product_name}'
+        AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
+        AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+    ),
+    effective_period AS (
+      SELECT
+        {period_start_expr} AS eff_start,
+        {period_end_expr} AS eff_end
+      FROM upsell_period p
+      WHERE p.period_start IS NOT NULL
+    ),
+    normal_first AS (
+      SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS normal_count
+      FROM {table}
+      CROSS JOIN effective_period ep
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{normal_product_name}'
+        AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
+        AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+    ),
+    upsell_first AS (
+      SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS upsell_count
+      FROM {table}
+      CROSS JOIN effective_period ep
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{upsell_product_name}'
+        AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
+        AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+    )
+    SELECT
+      n.normal_count,
+      u.upsell_count,
+      ep.eff_start AS period_start,
+      ep.eff_end AS period_end,
+      SAFE_DIVIDE(u.upsell_count, n.normal_count + u.upsell_count) * 100 AS upsell_rate
+    FROM normal_first n
+    CROSS JOIN upsell_first u
+    CROSS JOIN effective_period ep
+    """
+
+
+def build_upsell_rate_monthly_sql(
+    company_key: str,
+    normal_product_name: str,
+    upsell_product_name: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    """月別アップセル率計算SQL.
+
+    アップセル商品が購入されている期間内で、月ごとの
+    通常商品とアップセル商品の1回目購入数からアップセル率を算出。
+    """
+    table = get_table_ref(company_key)
+
+    period_start_expr = "p.period_start"
+    period_end_expr = "p.period_end"
+    if date_from:
+        period_start_expr = f"GREATEST(p.period_start, '{date_from}')"
+    if date_to:
+        period_end_expr = f"LEAST(p.period_end, '{date_to}')"
+
+    return f"""
+    WITH
+    upsell_period AS (
+      SELECT
+        MIN(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_start,
+        MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_end
+      FROM {table}
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{upsell_product_name}'
+        AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
+        AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+    ),
+    effective_period AS (
+      SELECT
+        {period_start_expr} AS eff_start,
+        {period_end_expr} AS eff_end
+      FROM upsell_period p
+      WHERE p.period_start IS NOT NULL
+    ),
+    monthly_normal AS (
+      SELECT
+        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS normal_count
+      FROM {table}
+      CROSS JOIN effective_period ep
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{normal_product_name}'
+        AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
+        AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+      GROUP BY cohort_month
+    ),
+    monthly_upsell AS (
+      SELECT
+        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS upsell_count
+      FROM {table}
+      CROSS JOIN effective_period ep
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{upsell_product_name}'
+        AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
+        AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+      GROUP BY cohort_month
+    )
+    SELECT
+      COALESCE(n.cohort_month, u.cohort_month) AS cohort_month,
+      IFNULL(n.normal_count, 0) AS normal_count,
+      IFNULL(u.upsell_count, 0) AS upsell_count,
+      SAFE_DIVIDE(
+        IFNULL(u.upsell_count, 0),
+        IFNULL(n.normal_count, 0) + IFNULL(u.upsell_count, 0)
+      ) * 100 AS upsell_rate
+    FROM monthly_normal n
+    FULL OUTER JOIN monthly_upsell u ON n.cohort_month = u.cohort_month
+    ORDER BY cohort_month
     """

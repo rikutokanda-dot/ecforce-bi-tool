@@ -24,9 +24,13 @@ def get_bigquery_client() -> bigquery.Client:
     )
 
 
-@st.cache_data(ttl=3600, show_spinner="BigQueryからデータを取得中...")
+@st.cache_data(ttl=21600, show_spinner="BigQueryからデータを取得中...")
 def execute_query(_client: bigquery.Client, query: str) -> pd.DataFrame:
-    """キャッシュ付きクエリ実行. TTL=1時間."""
+    """キャッシュ付きクエリ実行. TTL=6時間.
+
+    同一クエリ（同一フィルタ条件）は全ユーザー共有キャッシュ。
+    BigQuery無料枠(1TB/月)を節約するためTTLを長めに設定。
+    """
     return _client.query(query).to_dataframe()
 
 

@@ -41,28 +41,20 @@ def build_filter_clause(
 
     if product_categories:
         conditions = " OR ".join(
-            f"`{Col.PRODUCT_CATEGORY}` LIKE '%{_escape_like(c)}%'"
-            for c in product_categories
+            f"`{Col.PRODUCT_CATEGORY}` = '{c}'" for c in product_categories
         )
         clauses.append(f"AND ({conditions})")
 
     if ad_groups:
         conditions = " OR ".join(
-            f"`{Col.AD_GROUP}` LIKE '%{_escape_like(g)}%'"
-            for g in ad_groups
+            f"`{Col.AD_GROUP}` = '{g}'" for g in ad_groups
         )
         clauses.append(f"AND ({conditions})")
 
     if product_names:
         conditions = " OR ".join(
-            f"`{Col.PRODUCT_NAME}` LIKE '%{_escape_like(n)}%'"
-            for n in product_names
+            f"`{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{n}'" for n in product_names
         )
         clauses.append(f"AND ({conditions})")
 
     return "\n      ".join(clauses)
-
-
-def _escape_like(value: str) -> str:
-    """LIKE句内の特殊文字をエスケープ."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

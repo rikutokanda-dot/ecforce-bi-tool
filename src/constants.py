@@ -43,5 +43,4 @@ DRILLDOWN_OPTIONS = {
     "定期商品名": Col.SUBSCRIPTION_PRODUCT_NAME,
     "広告グループ": Col.AD_GROUP,
     "商品カテゴリ": Col.PRODUCT_CATEGORY,
-    "なし": None,
 }

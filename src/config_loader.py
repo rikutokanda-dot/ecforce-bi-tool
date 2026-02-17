@@ -100,3 +100,11 @@ def get_upsell_target(product_name: str) -> dict | None:
         if m.get("from_name") == product_name:
             return m
     return None
+
+
+def get_upsell_targets(product_name: str) -> list[dict]:
+    """商品名のアップセル先を全て取得. なければ空リスト.
+
+    1つの通常商品に複数のアップセル先がある場合に対応。
+    """
+    return [m for m in load_upsell_mappings() if m.get("from_name") == product_name]
