@@ -1,29 +1,631 @@
-# 商品発送サイクル設定
-# 会社キーごとに、デフォルト値と商品別の設定を記載
-# cycle1: 初回から2回目までの日数
-# cycle2: 3回目以降の間隔日数
-# ※Google Sheetsの「商品名」シートの内容をここに転記してください
-
-yakuin:
-  default:
-    cycle1: 30
-    cycle2: 30
-  products: []
-
-generic:
-  default:
-    cycle1: 30
-    cycle2: 30
-  products: []
-
-neus:
-  default:
-    cycle1: 30
-    cycle2: 30
-  products: []
-
-clinic:
-  default:
-    cycle1: 30
-    cycle2: 30
-  products: []
+products:
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース】_INS
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース_RT】
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース】_chg_RT
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース_chg】_INS
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【1袋実質永久無料定期コース】_SB
+  cycle1: 60
+  cycle2: 60
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回3980円定期コース】QR_IM
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース】_TU
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース】_ONS
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース】_INS_EX
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース_chg】_INS_EX
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【1袋実質永久無料定期コース】_EX_SB
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース_chg】_v2
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【1袋永久無料定期コース】_TK_SB
+  cycle1: 60
+  cycle2: 60
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース_v3】
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回1980円定期コース】_OL
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース_v2】
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース_v3】_SN
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース】-SMS
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース_chg】
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・1袋永久無料定期コース】-SMS
+  cycle1: 60
+  cycle2: 60
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース_chg】_SN
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・2袋定期コース_chg】
+  cycle1: 30
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース_chg】
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【HP定期コース】
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース】
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース】_OL2
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース_v2】_SN
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース_v1】_SN
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース_v1】
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース】_SN
+  cycle1: 15
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース】
+  cycle1: 15
+  cycle2: 30
+- name: 3Uクレンジングジェル【170日間返金保証付・初回1980円定期コース】
+  cycle1: 20
+  cycle2: 50
+- name: 3Uクレンジングジェル【1本定期コース】
+  cycle1: 20
+  cycle2: 20
+- name: <薬院オーガニックのプロポリス>【5+1キャンペーン※INS_LP】
+  cycle1: 30
+  cycle2: 60
+- name: <薬院オーガニックのプロポリス>【初回2箱2,980円定期スピード実感コース※INS_LP】
+  cycle1: 30
+  cycle2: 60
+- name: <薬院オーガニックのプロポリス＞【初回税込2,980円定期コース※INS_LP】
+  cycle1: 30
+  cycle2: 60
+- name: <薬院オーガニックのローヤルゼリー>【初回2980円税込定期コース】
+  cycle1: 30
+  cycle2: 60
+- name: <薬院オーガニックの粒マヌカ>【初回2980円税込定期コース】
+  cycle1: 30
+  cycle2: 60
+- name: ★Potenzaクリーム BCRich【180日間全額返金保証・定期コース】
+  cycle1: 30
+  cycle2: 60
+- name: ★Potenzaクリーム BCRich【240日間全額返金保証・初回1本実質無料・2回目以降永久1000円オフ定期コース】
+  cycle1: 120
+  cycle2: 120
+- name: ★温熱整帯　貼りシートPro【180日間全額返金保証・初回3960円定期コース】
+  cycle1: 15
+  cycle2: 30
+- name: ダニとりハンター_家中ダニ対策コース【6枚定期コース】
+  cycle1: 30
+  cycle2: 30
+- name: ダニとりハンター【初回特別価格1箱→2箱定期コース】_v2
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【240日全額返金保証・永久1000円オフ定期コース】
+  cycle1: 120
+  cycle2: 120
+- name: テアテプラスPotenza錠0【240日全額返金保証・永久1000円オフ定期コース】_RU
+  cycle1: 120
+  cycle2: 120
+- name: テアテプラスPotenza錠0【240日全額返金保証・永久1000円オフ定期コース】_SE_ML
+  cycle1: 120
+  cycle2: 120
+- name: テアテプラスPotenza錠0【240日全額返金保証・永久1000円オフ定期コース】_SH
+  cycle1: 120
+  cycle2: 120
+- name: テアテプラスPotenza錠0【240日全額返金保証・永久1000円オフ定期コース】_SH_v2
+  cycle1: 120
+  cycle2: 120
+- name: テアテプラスPotenza錠0【240日全額返金保証・永久1000円オフ定期コース】_UV
+  cycle1: 120
+  cycle2: 120
+- name: テアテプラスPotenza錠0【360日全額返金保証・初回実質1袋無料・永久2000円オフ定期コース】
+  cycle1: 180
+  cycle2: 180
+- name: テアテプラスPotenza錠0【初回3280円・定期再開コース】_SH
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【初回特別価格1袋 →2袋定期コース】
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【初回特別価格1袋→2袋定期コース】_AZ
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【初回特別価格1袋→2袋定期コース】_RT
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【初回特別価格1袋→2袋定期コース】_SE
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【初回特別価格1袋→2袋定期コース】_SH
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【初回特別価格1袋→2袋定期コース】_SH_SN
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【初回特別価格1袋→2袋定期コース】_TH
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【初回特別価格1袋→2袋定期コース】_TU
+  cycle1: 30
+  cycle2: 60
+- name: テアテプラスPotenza錠0【定期1袋追加】
+  cycle1: 30
+  cycle2: 30
+- name: テアテプラス_極上毛穴セット【TC定期価格2000円コース】
+  cycle1: 1
+  cycle2: 1
+- name: テアテプラスセナクリア 【240日間返金保証・初回実質1本無料・永久1000円オフ定期コース】_IF
+  cycle1: 80
+  cycle2: 80
+- name: テアテプラスセナクリア 【初回1本無料・永久1000円オフ定期コース】
+  cycle1: 80
+  cycle2: 80
+- name: テアテプラスセナクリア 【初回1本無料・永久1000円オフ定期コース】_ML
+  cycle1: 80
+  cycle2: 80
+- name: テアテプラスセナクリア 【永久1000円オフ定期コース】_チラシ限定
+  cycle1: 80
+  cycle2: 80
+- name: テアテプラスセナクリア【180日間全額返金保証・定期コース】-BTM_SG
+  cycle1: 20
+  cycle2: 40
+- name: テアテプラスセナクリア【180日間全額返金保証・定期コース】-IF
+  cycle1: 20
+  cycle2: 40
+- name: テアテプラスセナクリア【180日間全額返金保証・定期コース】_AZ
+  cycle1: 20
+  cycle2: 40
+- name: テアテプラスセナクリア【180日間全額返金保証・定期コース】_RT
+  cycle1: 20
+  cycle2: 40
+- name: テアテプラスセナクリア【180日間全額返金保証・定期コース】_SG
+  cycle1: 20
+  cycle2: 40
+- name: テアテプラスセナクリア【180日間全額返金保証・定期コース】_v2
+  cycle1: 20
+  cycle2: 40
+- name: テアテプラスセナクリア【180日間全額返金保証・定期コース】_v4
+  cycle1: 20
+  cycle2: 40
+- name: テアテプラスセナクリア【初回1本無料・永久1000円オフ定期コース】_BW
+  cycle1: 80
+  cycle2: 80
+- name: テアテプラスセナクリア【通常価格】
+  cycle1: 20
+  cycle2: 0
+- name: テアテプラスボディウォッシュ 【150日間全額返金保証 ・全身ニキビケア定期コース】
+  cycle1: 20
+  cycle2: 40
+- name: テアテプラス化粧水&テアテモイスチャージェルセット【初回3980円定期コース】
+  cycle1: 30
+  cycle2: 30
+- name: テアテプラス定期コース_4,980円
+  cycle1: 30
+  cycle2: 30
+- name: レーザープラチナム0【180日間全額返金保証・定期コース】_SMS_v4
+  cycle1: 30
+  cycle2: 30
+- name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回3980円定期コース】_IM
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・1袋永久無料定期コース】_RU
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・1袋永久無料定期コース】_chg_RU
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース_chg】_ST_v2
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース_chg】_v3
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース】_IM
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース】_ONS_OT
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース】_v3
+  cycle1: 15
+  cycle2: 30
+- name: 肝要マキシム習慣肝要マキシム【1袋実質永久無料定期コース】_ML_SB
+  cycle1: 60
+  cycle2: 60
+- name: 肝要マキシム習慣肝要マキシム【1袋永久無料定期コース】_SB
+  cycle1: 60
+  cycle2: 60
+- name: 肝要マキシム習慣肝要マキシム【HP定期コース】_v2
+  cycle1: 15
+  cycle2: 15
+- name: 薬院オーガニックのプロポリス【HP定期お届け便】
+  cycle1: 30
+  cycle2: 30
+- name: 薬院オーガニックの粒マヌカ【初回3980円2箱特別定期コース】
+  cycle1: 0
+  cycle2: 0
+- name: 薬院オーガニックの高活性コエンザイムQ10【2袋定期コース】_v3
+  cycle1: 60
+  cycle2: 60
+- name: 薬院オーガニックの高活性コエンザイムQ10【HP定期価格】_v2
+  cycle1: 30
+  cycle2: 30
+- name: 薬院オーガニックの高活性コエンザイムQ10【初回永年返金保証・1袋→2袋定期コース】_v3
+  cycle1: 30
+  cycle2: 60
+- name: ★カカるるん【180日間全額返金保証・初回1本無料・定期コース】_IM
+  cycle1: 20
+  cycle2: 40
+- name: ★カカるるん【180日間全額返金保証・定期コース】
+  cycle1: 20
+  cycle2: 40
+- name: ★カカるるん【180日間全額返金保証・定期コース】-AZ
+  cycle1: 20
+  cycle2: 40
+- name: ★カカるるん【180日間全額返金保証・定期コース】-USL
+  cycle1: 20
+  cycle2: 40
+- name: ★カカるるん【180日間全額返金保証・定期コース】_ATHF
+  cycle1: 20
+  cycle2: 40
+- name: ★カカるるん【180日間全額返金保証・定期コース】_CAOB
+  cycle1: 20
+  cycle2: 40
+- name: ★カカるるん【180日間全額返金保証・定期コース】_IM
+  cycle1: 20
+  cycle2: 40
+- name: ★カカるるん【180日間全額返金保証・定期コース】_IMQR
+  cycle1: 20
+  cycle2: 40
+- name: ★カカるるん【230日間全額返金保証・4本おまとめ1,000円OFF定期コース】_DMUSL_TEL
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・6本おまとめ実質1本無料+くつ下プレゼント付定期コース】_ATHF_USL
+  cycle1: 120
+  cycle2: 120
+- name: ★カカるるん【230日間全額返金保証・6本おまとめ実質1本無料+くつ下プレゼント付定期コース】_USL
+  cycle1: 120
+  cycle2: 120
+- name: ★カカるるん【230日間全額返金保証・6本おまとめ実質1本無料定期コース】_ATHF_USL
+  cycle1: 120
+  cycle2: 120
+- name: ★カカるるん【230日間全額返金保証・6本おまとめ実質1本無料定期コース】_DMUSL_TEL
+  cycle1: 120
+  cycle2: 120
+- name: ★カカるるん【230日間全額返金保証・6本おまとめ実質1本無料定期コース】_USL
+  cycle1: 120
+  cycle2: 120
+- name: ★カカるるん【230日間全額返金保証・初回1本実質無料+くつ下プレゼント付・2回目以降永久1000円オフ定期コース】
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本実質無料+くつ下プレゼント付・2回目以降永久1000円オフ定期コース】_ATHF
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本実質無料・2回目以降永久1000円オフ定期コース】
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本実質無料・2回目以降永久1000円オフ定期コース】_ATHF
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本実質無料・2回目以降永久1000円オフ定期コース】_ATHF_MUSL_ST_1d
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本実質無料・2回目以降永久1000円オフ定期コース】_ATHF_MUSL_TK
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本実質無料・2回目以降永久1000円オフ定期コース】_MUSL_ST_1d
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本実質無料・2回目以降永久1000円オフ定期コース】_MUSL_TK_v2
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本無料・2回目以降永久1000円オフ定期コース】_IMQR
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本無料・2回目以降永久1000円オフ定期コース】_MUSL_TK
+  cycle1: 80
+  cycle2: 80
+- name: ★カカるるん【230日間全額返金保証・初回1本無料・2回目以降永久1000円オフ定期コース】_SMSUSL_v2
+  cycle1: 80
+  cycle2: 80
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_CHG
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_CHG_MUSL_TK
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_KNE
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_KNE_FRYUSL
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_KNE_MUSL_ST1
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_KNE_MUSL_TK
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_LWB
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_LWB_MUSL_ST1
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_LWB_MUSL_TK
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_NVP
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_NVP_MUSL_ST1
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_NVP_MUSL_TK
+  cycle1: 90
+  cycle2: 90
+- name: カンシャ【180日間全額返金保証・初回1袋無料・定期コース】_IM
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_CHG
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_CHG_MUSL_ST1
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_CHG_MUSL_TK
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_IM
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_KNE
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_KNE_CAOB
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_LWB
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_LWB_CAOB
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_NVP
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_NVP_CAOB
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_SHP
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_SN
+  cycle1: 15
+  cycle2: 30
+- name: カンシャ【1袋定期コース】
+  cycle1: 15
+  cycle2: 15
+- name: カンシャ【1袋追加】
+  cycle1: 0
+  cycle2: 0
+- name: ザコツフェリン強腰冷散【定期コース】_CHG
+  cycle1: 10
+  cycle2: 20
+- name: シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG
+  cycle1: 30
+  cycle2: 30
+- name: シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG_MUSL_ST_1d
+  cycle1: 30
+  cycle2: 30
+- name: シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG_MUSL_TK
+  cycle1: 30
+  cycle2: 30
+- name: シュサノンα【180日間全額返金保証・定期コース】
+  cycle1: 30
+  cycle2: 30
+- name: シュサノンα【260日間全額返金保証・実質1袋永久無料・初回スキンケアセット付定期コース】_CHG
+  cycle1: 30
+  cycle2: 30
+- name: シュサノン内服錠【180日間全額返金保証・定期コース】
+  cycle1: 10
+  cycle2: 30
+- name: ニノピール0【180日間全額返金保証・定期コース】
+  cycle1: 20
+  cycle2: 40
+- name: ニノピール0【230日間全額返金保証・実質永久1本無料定期コース】
+  cycle1: 80
+  cycle2: 80
+- name: ピュアリーピンク【180日間全額返金保証・1袋永久無料定期コース】
+  cycle1: 15
+  cycle2: 30
+- name: ピュアリーピンク【180日間全額返金保証・定期コース】-AP
+  cycle1: 15
+  cycle2: 30
+- name: ピュアリーピンク【180日間全額返金保証・定期コース】-v2
+  cycle1: 15
+  cycle2: 30
+- name: ピュアリーピンク【260日間全額返金保証・1袋実質永久無料定期コース】-AP_MUSL_TK
+  cycle1: 15
+  cycle2: 90
+- name: ピュアリーピンク【260日間全額返金保証・1袋実質永久無料定期コース】_MUSL_ST_1d
+  cycle1: 15
+  cycle2: 90
+- name: ピュアリーピンク【260日間全額返金保証・1袋実質永久無料定期コース】_MUSL_TK
+  cycle1: 15
+  cycle2: 90
+- name: ピュアリーピンク【3袋実質永久無料・12袋おまとめ定期コース】
+  cycle1: 180
+  cycle2: 180
+- name: ★三ツ星クリアナチュラル  【240日間全額返金保証・初回実質1本無料・2回目以降永久1000円オフ・初回NBNT特典付き_v8】
+  cycle1: 80
+  cycle2: 80
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回1980円定期コース】
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回1980円定期コース】HGK
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回1980円定期コース】QR
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回2980円定期コース】
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回2980円定期コース】HGK
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回2980円定期コース】QR
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回2980円定期コース】QR_IM
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回2980円定期コース】_IM
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回3980円定期コース_v6】
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回3980円定期コース_v8】
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回3980円定期コース_v9】
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回980円定期コース】
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・初回980円定期コース】QR
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・特別実感コース】
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・特別実感定期コース_v2】
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・特別実感定期コース_v3】
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【180日間全額返金保証・特別実感定期コース_v3】_IM
+  cycle1: 20
+  cycle2: 40
+- name: ★三ツ星クリアナチュラル 【240日間全額返金保証・初回実質1本無料・2回目以降永久1000円オフ・初回ネイルブースター&飲むテルビーナプレゼント】MA
+  cycle1: 80
+  cycle2: 80
+- name: ★三ツ星クリアナチュラル 【260日間全額返金保証・永久1本無料定期コース_v2】QR_IM
+  cycle1: 80
+  cycle2: 80
+- name: ★三ツ星クリアナチュラル 【通常価格】
+  cycle1: 0
+  cycle2: 0
+- name: テルビーナ【180日間全額返金保証・初回980円定期コース】
+  cycle1: 20
+  cycle2: 40
+- name: テルビーナプロクリーン 【180日間全額返金保証・初回980円定期コース】
+  cycle1: 20
+  cycle2: 40
+- name: テルビーナプロクリーン 【180日間全額返金保証・特別実感定期コース】
+  cycle1: 30
+  cycle2: 30
+- name: 1ヶ月分実質永久無料コース 【PantoGuard_Hydroout】W
+  cycle1: 30
+  cycle2: 30
+- name: 1ヶ月分実質永久無料コース 【PantoGuard】v2
+  cycle1: 30
+  cycle2: 30
+- name: 1ヶ月分実質永久無料コース 【SpeedGrowth_Hydroout】M-v6
+  cycle1: 30
+  cycle2: 30
+- name: 1ヶ月分実質永久無料コース 【minoxidil_PantoGuard_Hydroout】W-RV-v2
+  cycle1: 30
+  cycle2: 30
+- name: 1ヶ月分実質永久無料コース 【minoxidil_PantoGuard_Hydroout】W-v6
+  cycle1: 30
+  cycle2: 30
+- name: 1ヶ月分実質永久無料コース 【minoxidil_PantoGuard_Hydroout】W-v7
+  cycle1: 30
+  cycle2: 30
+- name: 4ヶ月分実質永久無料コース 【SpeedGrowth_Hydroout】M-v8
+  cycle1: 30
+  cycle2: 30
+- name: PantoGuard 240錠_Hydroout 4袋
+  cycle1: 30
+  cycle2: 30
+- name: PantoGuard 720錠_Hydroout 12袋_v2
+  cycle1: 30
+  cycle2: 30
+- name: SpeedGrowth 120錠_Hydroout 4袋
+  cycle1: 30
+  cycle2: 30
+- name: SpeedGrowth 30錠_Hydroout 1袋
+  cycle1: 30
+  cycle2: 30
+- name: minoxidil 120錠_PantoGuard 240錠_Hydroout 4袋
+  cycle1: 30
+  cycle2: 30
+- name: minoxidil 30錠_PantoGuard 60錠_Hydroout 1袋
+  cycle1: 30
+  cycle2: 30
+- name: minoxidil 360錠_PantoGuard 720錠_Hydroout 12袋_v2
+  cycle1: 30
+  cycle2: 30
+- name: 【単品】 男性_SpeedGrowth 30錠／女性_ミノキシジル 30錠・PantoGuard 60錠
+  cycle1: 30
+  cycle2: 30
+- name: 【社販】 SpeedGrowth 30錠
+  cycle1: 30
+  cycle2: 30
+- name: エクソテリド【実質永久1本無料定期コース】DC1_2-M-v4
+  cycle1: 30
+  cycle2: 30
+- name: スピードグロース発毛コース 【SpeedGrowth_Hydroout】v4
+  cycle1: 30
+  cycle2: 30
+- name: パントガード発毛コース 【PantoGuard_Hydroout】
+  cycle1: 30
+  cycle2: 30
+- name: パントガード発毛コース 【PantoGuard】v2
+  cycle1: 30
+  cycle2: 30
+- name: パントガード発毛コース 【minoxidil_PantoGuard_Hydroout】v4
+  cycle1: 30
+  cycle2: 30
+- name: カンシャ【180日間全額返金保証・定期コース】_IMQR
+  cycle1: 30
+  cycle2: 30
+defaults:
+  cycle1: 30
+  cycle2: 30

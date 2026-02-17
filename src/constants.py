@@ -2,7 +2,8 @@
 
 PROJECT_ID = "ecforce-data"
 BQ_LOCATION = "asia-northeast1"
-MAX_RETENTION_MONTHS = 12
+MAX_RETENTION_MONTHS = 24
+LTV_PERIOD_DAYS = 365
 
 
 class Col:
@@ -16,6 +17,7 @@ class Col:
     ORDER_STATUS = "受注_対応状況"
     PAYMENT_STATUS = "受注_決済状況"
     PRODUCT_NAME = "受注_受注商品_商品名"
+    SUBSCRIPTION_PRODUCT_NAME = "定期受注_受注商品_商品名"
     AD_GROUP = "受注_広告url_グループ名"
     PRODUCT_CATEGORY = "定期受注_受注商品_商品カテゴリ"
     PAYMENT_AMOUNT = "受注_決済金額"
@@ -36,10 +38,10 @@ class LogicalSeq:
     # NULL = 失敗データ
 
 
-# ドリルダウン軸の定義
+# ドリルダウン軸の定義 (先頭がデフォルト)
 DRILLDOWN_OPTIONS = {
-    "なし": None,
-    "定期商品名": Col.PRODUCT_NAME,
+    "定期商品名": Col.SUBSCRIPTION_PRODUCT_NAME,
     "広告グループ": Col.AD_GROUP,
     "商品カテゴリ": Col.PRODUCT_CATEGORY,
+    "なし": None,
 }

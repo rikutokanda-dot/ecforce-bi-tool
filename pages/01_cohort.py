@@ -1,5 +1,9 @@
 """コホート分析ページ - 継続率・残存率・LTV."""
 
+from __future__ import annotations
+
+from datetime import date
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -10,22 +14,35 @@ from src.components.cohort_heatmap import render_cohort_heatmap, render_retentio
 from src.components.download_button import render_download_buttons
 from src.components.filters import render_cohort_filters
 from src.components.metrics_row import render_metrics
-from src.queries.cohort import build_aggregate_cohort_sql, build_cohort_sql, build_drilldown_sql
+from src.config_loader import get_product_cycle, get_upsell_target
+from src.constants import Col
+from src.queries.cohort import (
+    build_aggregate_cohort_sql,
+    build_cohort_sql,
+    build_drilldown_sql,
+    build_max_date_sql,
+    build_upsell_sql,
+)
 from src.session import SessionKey, get_selected_company_key
 from src.transforms.cohort_transform import (
+    apply_completeness_mask_to_summary,
+    build_1year_ltv_table,
     build_aggregate_table,
     build_drilldown_rate_matrices,
     build_drilldown_retention_table,
+    build_product_summary_table,
     build_retention_rate_matrix,
     build_retention_table,
     build_shipping_schedule,
     compute_aggregate_metrics,
+    compute_max_orders_in_period,
     compute_summary_metrics,
+    compute_upsell_rate,
 )
 
 
 # =====================================================================
-# ヘルパー: 色付きHTMLテーブル (Streamlitはトップダウン実行のため先に定義)
+# ヘルパー: 色付きHTMLテーブル
 # =====================================================================
 def _styled_table(df: pd.DataFrame, value_col: str, color: str = "blue") -> str:
     """値の大きさに応じて色の濃さが変わるHTMLテーブルを生成."""
@@ -46,17 +63,20 @@ def _styled_table(df: pd.DataFrame, value_col: str, color: str = "blue") -> str:
         text_color = "#1a1a2e" if alpha < 0.4 else "#ffffff"
 
         cells = ""
-        for col in df.columns:
-            v = row[col]
-            if col == value_col:
+        for col_name in df.columns:
+            v = row[col_name]
+            if col_name == value_col:
                 cells += f'<td style="background:{bg_color};color:{text_color};font-weight:600;text-align:right;padding:4px 8px;">{v}%</td>'
-            elif isinstance(v, (int, float)) and col != df.columns[0]:
+            elif isinstance(v, (int, float)) and col_name != df.columns[0]:
                 cells += f'<td style="text-align:right;padding:4px 8px;">{int(v):,}</td>'
             else:
                 cells += f'<td style="padding:4px 8px;">{v}</td>'
         rows_html += f"<tr>{cells}</tr>"
 
-    header = "".join(f'<th style="padding:4px 8px;text-align:center;border-bottom:2px solid #ddd;">{c}</th>' for c in df.columns)
+    header = "".join(
+        f'<th style="padding:4px 8px;text-align:center;border-bottom:2px solid #ddd;">{c}</th>'
+        for c in df.columns
+    )
 
     return f"""
     <div style="max-height:460px;overflow-y:auto;">
@@ -68,6 +88,9 @@ def _styled_table(df: pd.DataFrame, value_col: str, color: str = "blue") -> str:
     """
 
 
+# =====================================================================
+# ページ初期化
+# =====================================================================
 st.header("コホート分析")
 
 company_key = get_selected_company_key()
@@ -96,16 +119,93 @@ filter_params = dict(
     product_names=filters["product_names"],
 )
 
+# データ最終日を取得
+try:
+    max_date_df = execute_query(client, build_max_date_sql(company_key))
+    data_cutoff_date = max_date_df["max_date"].iloc[0].date() if not max_date_df.empty else date.today()
+except Exception:
+    data_cutoff_date = date.today()
+
+
 # =====================================================================
-# メインタブ: 通算 / 月別 / ドリルダウン
+# メインタブ: 商品別 / 通算 / 月別コホート
 # =====================================================================
-main_tab_aggregate, main_tab_monthly, main_tab_drilldown = st.tabs(
-    ["通算", "月別コホート", "ドリルダウン"]
+main_tab_product, main_tab_aggregate, main_tab_monthly = st.tabs(
+    ["商品別", "通算", "月別コホート"]
 )
 
 
 # =====================================================================
-# 通算タブ — 一画面で残存率・継続率・LTVが一瞬でわかるレイアウト
+# 商品別タブ (デフォルト)
+# =====================================================================
+with main_tab_product:
+    dd_col = Col.SUBSCRIPTION_PRODUCT_NAME
+    dd_sql = build_drilldown_sql(drilldown_column=dd_col, **filter_params)
+    try:
+        dd_df = execute_query(client, dd_sql)
+    except Exception as e:
+        st.error(f"BigQueryクエリ実行エラー: {e}")
+        st.stop()
+
+    if dd_df.empty:
+        st.info("該当するデータが見つかりませんでした。")
+    else:
+        product_names_list = sorted(dd_df["dimension_col"].unique())
+        st.info(f"{len(product_names_list)} 商品が見つかりました。")
+
+        for pname in product_names_list:
+            with st.expander(f"{pname}", expanded=False):
+                summary = build_product_summary_table(dd_df, pname)
+                if summary.empty:
+                    st.info("データがありません。")
+                    continue
+
+                cohort_months = dd_df[dd_df["dimension_col"] == pname]["cohort_month"].tolist()
+                summary = apply_completeness_mask_to_summary(
+                    summary, cohort_months, pname, data_cutoff_date
+                )
+
+                st.dataframe(summary, use_container_width=True, hide_index=True)
+
+                # アップセル率
+                upsell_target = get_upsell_target(pname)
+                if upsell_target:
+                    cols = st.columns(2)
+                    if upsell_target.get("upsell_name"):
+                        us_sql = build_upsell_sql(
+                            company_key, pname, upsell_target["upsell_name"],
+                            date_from_str, date_to_str,
+                        )
+                        try:
+                            us_df = execute_query(client, us_sql)
+                            us_rate = compute_upsell_rate(us_df)
+                            cols[0].metric(
+                                f"アップセル率 → {upsell_target['upsell_name'][:20]}...",
+                                f"{us_rate}%",
+                            )
+                        except Exception:
+                            cols[0].metric("アップセル率", "エラー")
+
+                    if upsell_target.get("upsell_upsell_name"):
+                        uu_sql = build_upsell_sql(
+                            company_key,
+                            upsell_target["upsell_name"],
+                            upsell_target["upsell_upsell_name"],
+                            date_from_str, date_to_str,
+                        )
+                        try:
+                            uu_df = execute_query(client, uu_sql)
+                            uu_rate = compute_upsell_rate(uu_df)
+                            cols[1].metric(
+                                f"アップセル² → {upsell_target['upsell_upsell_name'][:20]}...",
+                                f"{uu_rate}%",
+                            )
+                        except Exception:
+                            cols[1].metric("アップセル²率", "エラー")
+
+
+# =====================================================================
+# 通算タブ — 残存率・継続率・1年LTV
 # =====================================================================
 with main_tab_aggregate:
     agg_sql = build_aggregate_cohort_sql(**filter_params)
@@ -124,68 +224,106 @@ with main_tab_aggregate:
         if agg_table.empty:
             st.info("データがありません。")
         else:
+            # 1年LTV計算
+            selected_pnames = filters.get("product_names")
+            if selected_pnames and len(selected_pnames) == 1:
+                cycle1, cycle2 = get_product_cycle(selected_pnames[0])
+            else:
+                cycle1, cycle2 = 30, 30
+
+            proj_rates = st.session_state.get("proj_rates", {})
+            proj_amounts = st.session_state.get("proj_amounts", {})
+
+            ltv_table = build_1year_ltv_table(
+                agg_df, cycle1, cycle2,
+                projected_rates=proj_rates or None,
+                projected_amounts=proj_amounts or None,
+            )
+
             # ========== KPIカード ==========
             kpi1, kpi2, kpi3, kpi4 = st.columns(4)
             kpi1.metric("新規顧客数", f"{agg_metrics['total_new_users']:,}")
             kpi2.metric("2回目残存率", f"{agg_metrics['retention_2']}%")
 
-            # 6回目残存率
             r6 = agg_table.loc[agg_table["定期回数"] == "6回目", "継続率(%)"]
             kpi3.metric("6回目残存率", f"{r6.values[0]}%" if len(r6) > 0 else "-")
 
-            kpi4.metric("12回LTV", f"¥{agg_metrics['ltv_12']:,}")
+            if not ltv_table.empty:
+                year_ltv = ltv_table["LTV(円)"].iloc[-1]
+                kpi4.metric("1年LTV", f"¥{year_ltv:,}")
+            else:
+                kpi4.metric("1年LTV", "-")
 
             st.markdown("")
 
-            # ========== メイン3カラム: 残存率 / 継続率 / LTV ==========
+            # ========== メイン3カラム ==========
             col_surv, col_cont, col_ltv = st.columns(3)
 
-            # --- 残存率テーブル (N回目の人数 / 初回全体) ---
             with col_surv:
                 st.markdown("##### 残存率")
                 surv_df = agg_table[["定期回数", "継続人数", "継続率(%)"]].copy()
                 surv_df.columns = ["回数", "人数", "残存率(%)"]
-
-                # 色付きHTMLテーブル
                 html = _styled_table(surv_df, value_col="残存率(%)", color="blue")
                 st.markdown(html, unsafe_allow_html=True)
 
-            # --- 継続率テーブル (N回目 / N-1回目 = 前回比) ---
             with col_cont:
                 st.markdown("##### 継続率 (前回比)")
                 cont_rows = []
                 prev_count = agg_table["継続人数"].iloc[0]
-                for _, row in agg_table.iterrows():
-                    curr = row["継続人数"]
+                for _, r in agg_table.iterrows():
+                    curr = r["継続人数"]
                     rate = round(curr / prev_count * 100, 1) if prev_count > 0 else 0.0
                     cont_rows.append({
-                        "回数": row["定期回数"],
+                        "回数": r["定期回数"],
                         "人数": int(curr),
                         "継続率(%)": rate,
                     })
                     prev_count = curr
                 cont_df = pd.DataFrame(cont_rows)
-
                 html = _styled_table(cont_df, value_col="継続率(%)", color="green")
                 st.markdown(html, unsafe_allow_html=True)
 
-            # --- LTVテーブル ---
             with col_ltv:
-                st.markdown("##### LTV")
-                ltv_df = agg_table[["定期回数", "平均単価(円)", "累積売上(円)", "LTV(円)"]].copy()
-                ltv_df.columns = ["回数", "平均単価", "累積売上", "LTV"]
-                ltv_df["平均単価"] = ltv_df["平均単価"].apply(lambda v: f"¥{v:,}")
-                ltv_df["累積売上"] = ltv_df["累積売上"].apply(lambda v: f"¥{v:,}")
-                ltv_df["LTV"] = ltv_df["LTV"].apply(lambda v: f"¥{v:,}")
+                st.markdown("##### 1年LTV")
+                if not ltv_table.empty:
+                    display_ltv = ltv_table[["定期回数", "平均単価(円)", "LTV(円)", "予測"]].copy()
+                    display_ltv["平均単価(円)"] = display_ltv["平均単価(円)"].apply(lambda v: f"¥{v:,}")
+                    display_ltv["LTV(円)"] = display_ltv["LTV(円)"].apply(lambda v: f"¥{v:,}")
+                    display_ltv["予測"] = display_ltv["予測"].apply(lambda v: "予測" if v else "実績")
+                    st.dataframe(display_ltv, use_container_width=True, hide_index=True, height=460)
 
-                st.dataframe(ltv_df, use_container_width=True, hide_index=True, height=460)
+            # ========== 予測値の編集 ==========
+            if not ltv_table.empty and ltv_table["予測"].any():
+                st.markdown("---")
+                st.markdown("##### 予測値の編集")
+                st.caption("予測行の継続率・平均単価を編集すると1年LTVが再計算されます")
+
+                proj_rows = ltv_table[ltv_table["予測"]].copy()
+                edit_df = proj_rows[["定期回数", "継続率(%)", "平均単価(円)"]].copy()
+
+                edited = st.data_editor(
+                    edit_df,
+                    key="ltv_editor",
+                    disabled=["定期回数"],
+                    use_container_width=True,
+                )
+
+                if st.button("再計算", key="recalc_ltv"):
+                    new_rates = {}
+                    new_amounts = {}
+                    for _, erow in edited.iterrows():
+                        order_num = int(erow["定期回数"].replace("回目", ""))
+                        new_rates[order_num] = float(erow["継続率(%)"])
+                        new_amounts[order_num] = float(erow["平均単価(円)"])
+                    st.session_state["proj_rates"] = new_rates
+                    st.session_state["proj_amounts"] = new_amounts
+                    st.rerun()
 
             st.markdown("")
 
             # ========== グラフ ==========
             fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-            # 残存率バー
             fig.add_trace(
                 go.Bar(
                     x=agg_table["定期回数"],
@@ -199,24 +337,24 @@ with main_tab_aggregate:
                 secondary_y=False,
             )
 
-            # LTV折れ線
-            fig.add_trace(
-                go.Scatter(
-                    x=agg_table["定期回数"],
-                    y=agg_table["LTV(円)"],
-                    name="LTV(円)",
-                    mode="lines+markers+text",
-                    text=[f"¥{v:,}" for v in agg_table["LTV(円)"]],
-                    textposition="top center",
-                    textfont=dict(size=9),
-                    line=dict(color="#E74C3C", width=2.5),
-                    marker=dict(size=7),
-                ),
-                secondary_y=True,
-            )
+            if not ltv_table.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=ltv_table["定期回数"],
+                        y=ltv_table["LTV(円)"],
+                        name="1年LTV(円)",
+                        mode="lines+markers+text",
+                        text=[f"¥{v:,}" for v in ltv_table["LTV(円)"]],
+                        textposition="top center",
+                        textfont=dict(size=9),
+                        line=dict(color="#E74C3C", width=2.5),
+                        marker=dict(size=7),
+                    ),
+                    secondary_y=True,
+                )
 
             fig.update_layout(
-                title="残存率 & LTV 推移",
+                title="残存率 & 1年LTV 推移",
                 xaxis_title="定期回数",
                 height=420,
                 margin=dict(l=50, r=50, t=50, b=40),
@@ -227,7 +365,6 @@ with main_tab_aggregate:
 
             st.plotly_chart(fig, use_container_width=True)
 
-            # ========== ダウンロード ==========
             st.divider()
             render_download_buttons(agg_table, f"aggregate_{company_key}")
 
@@ -246,11 +383,11 @@ with main_tab_monthly:
     if monthly_df.empty:
         st.info("該当するデータが見つかりませんでした。")
     else:
-        summary = compute_summary_metrics(monthly_df)
+        summary_m = compute_summary_metrics(monthly_df)
         render_metrics([
-            {"label": "新規顧客数 (合計)", "value": f"{summary['total_new_users']:,}"},
-            {"label": "2回目平均継続率", "value": f"{summary['avg_retention_2']}%"},
-            {"label": "最古月12回目残存率", "value": f"{summary['latest_12m_retention']}%"},
+            {"label": "新規顧客数 (合計)", "value": f"{summary_m['total_new_users']:,}"},
+            {"label": "2回目平均継続率", "value": f"{summary_m['avg_retention_2']}%"},
+            {"label": "最古月12回目残存率", "value": f"{summary_m['latest_12m_retention']}%"},
         ])
 
         st.divider()
@@ -273,57 +410,12 @@ with main_tab_monthly:
             render_download_buttons(retention_table, f"cohort_{company_key}")
 
         with tab_schedule:
+            selected_pn = filters["product_names"][0] if filters["product_names"] else None
             schedule = build_shipping_schedule(
                 cohort_months=monthly_df["cohort_month"].tolist(),
-                company_key=company_key,
-                product_name=filters["product_names"][0] if filters["product_names"] else None,
+                product_name=selected_pn,
             )
             if not schedule.empty:
                 st.dataframe(schedule, use_container_width=True, hide_index=True)
             else:
                 st.info("発送スケジュールを表示するデータがありません。")
-
-
-# =====================================================================
-# ドリルダウンタブ
-# =====================================================================
-with main_tab_drilldown:
-    if not drilldown_col:
-        st.info("サイドバーの「ドリルダウン軸」で商品名・広告グループ・商品カテゴリを選択してください。")
-    else:
-        dd_sql = build_drilldown_sql(drilldown_column=drilldown_col, **filter_params)
-        try:
-            dd_df = execute_query(client, dd_sql)
-        except Exception as e:
-            st.error(f"BigQueryクエリ実行エラー: {e}")
-            st.stop()
-
-        if dd_df.empty:
-            st.info("該当するドリルダウンデータが見つかりませんでした。")
-        else:
-            drilldown_tables = build_drilldown_retention_table(dd_df)
-            drilldown_matrices = build_drilldown_rate_matrices(dd_df)
-
-            st.info(f"{len(drilldown_tables)} グループが見つかりました。")
-
-            for group_name in drilldown_tables:
-                with st.expander(f"{group_name}", expanded=True):
-                    tab_hm, tab_tbl = st.tabs(["ヒートマップ", "データテーブル"])
-
-                    with tab_hm:
-                        if group_name in drilldown_matrices:
-                            render_cohort_heatmap(
-                                drilldown_matrices[group_name],
-                                title=f"{group_name} - 継続率",
-                            )
-
-                    with tab_tbl:
-                        st.dataframe(
-                            drilldown_tables[group_name],
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                        render_download_buttons(
-                            drilldown_tables[group_name],
-                            f"cohort_{company_key}_{group_name}",
-                        )

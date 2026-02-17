@@ -1,0 +1,13 @@
+# アップセルマッピング
+# from_name: 元の定期商品名
+# upsell_name: アップセル先の定期商品名
+# upsell_upsell_name: アップセルアップセル先の定期商品名 (任意)
+#
+# ※ プレースホルダーデータです。マスタ管理ページで編集してください。
+mappings:
+  - from_name: "肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース】_INS"
+    upsell_name: "肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース】_ONS"
+    upsell_upsell_name: null
+  - from_name: "肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース_chg】_INS"
+    upsell_name: "肝要マキシム習慣肝要マキシム【1袋実質永久無料定期コース】_SB"
+    upsell_upsell_name: null
