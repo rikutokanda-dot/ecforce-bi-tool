@@ -96,7 +96,7 @@ def _groups_to_mappings(groups: list[dict]) -> list[dict]:
         for i, un in enumerate(upsell_names):
             uun = upsell_upsell_names[i] if i < len(upsell_upsell_names) else None
             result.append({
-                "from_names": fns,
+                "from_names": list(fns),
                 "upsell_name": un,
                 "upsell_upsell_name": uun or None,
             })
