@@ -53,26 +53,26 @@ def _fetch_all_product_names(company_key: str) -> list[str]:
 # ヘルパー: YAMLの行リスト → 編集用グループ形式に変換
 # =====================================================================
 def _mappings_to_groups(mappings: list[dict]) -> list[dict]:
-    """YAMLの1行1マッピング形式を、from_name単位のグループにまとめる.
+    """YAMLの1行1マッピング形式を、from_names単位のグループにまとめる.
 
-    YAML形式: [{"from_name": "A", "upsell_name": "B", "upsell_upsell_name": "C"}, ...]
-    グループ: [{"from_name": "A", "upsell_names": ["B"], "upsell_upsell_names": ["C"]}, ...]
+    YAML形式: [{"from_names": ["A"], "upsell_name": "B", "upsell_upsell_name": "C"}, ...]
+    グループ: [{"from_names": ["A"], "upsell_names": ["B"], "upsell_upsell_names": ["C"]}, ...]
 
-    同じfrom_nameの行は1グループにまとめ、upsell_name/upsell_upsell_nameをリストに集約。
+    同じfrom_namesの行は1グループにまとめ、upsell_name/upsell_upsell_nameをリストに集約。
     """
-    groups: dict[str, dict] = {}
+    groups: dict[tuple, dict] = {}
     for m in mappings:
-        fn = m.get("from_name", "")
-        if not fn:
+        fns = tuple(m.get("from_names", []))
+        if not fns:
             continue
-        if fn not in groups:
-            groups[fn] = {"from_name": fn, "upsell_names": [], "upsell_upsell_names": []}
+        if fns not in groups:
+            groups[fns] = {"from_names": list(fns), "upsell_names": [], "upsell_upsell_names": []}
         un = m.get("upsell_name", "")
         uun = m.get("upsell_upsell_name") or ""
-        if un and un not in groups[fn]["upsell_names"]:
-            groups[fn]["upsell_names"].append(un)
-        if uun and uun not in groups[fn]["upsell_upsell_names"]:
-            groups[fn]["upsell_upsell_names"].append(uun)
+        if un and un not in groups[fns]["upsell_names"]:
+            groups[fns]["upsell_names"].append(un)
+        if uun and uun not in groups[fns]["upsell_upsell_names"]:
+            groups[fns]["upsell_upsell_names"].append(uun)
     return list(groups.values())
 
 
@@ -84,8 +84,8 @@ def _groups_to_mappings(groups: list[dict]) -> list[dict]:
     """
     result = []
     for g in groups:
-        fn = g.get("from_name", "")
-        if not fn:
+        fns = g.get("from_names", [])
+        if not fns:
             continue
         upsell_names = g.get("upsell_names", [])
         upsell_upsell_names = g.get("upsell_upsell_names", [])
@@ -96,7 +96,7 @@ def _groups_to_mappings(groups: list[dict]) -> list[dict]:
         for i, un in enumerate(upsell_names):
             uun = upsell_upsell_names[i] if i < len(upsell_upsell_names) else None
             result.append({
-                "from_name": fn,
+                "from_names": fns,
                 "upsell_name": un,
                 "upsell_upsell_name": uun or None,
             })
@@ -171,7 +171,7 @@ with tab_cycles:
 # =====================================================================
 with tab_upsell:
     st.subheader("アップセルマッピング")
-    st.caption("商品名ごとのアップセル先・アップセルアップセル先を管理します。同一商品に複数のアップセル先を設定できます。")
+    st.caption("アップセル率 = アップセル商品 / (アップセル商品 + 通常商品)")
 
     # --- 商品名一覧を取得 ---
     company_key = get_selected_company_key()
@@ -181,168 +181,88 @@ with tab_upsell:
         all_product_names: list[str] = _fetch_all_product_names(company_key)
         mappings = load_upsell_mappings()
 
-        # --- 検索フィルタ ---
-        upsell_search = st.text_input(
-            "商品名で検索",
-            placeholder="検索キーワード...",
-            key="upsell_search",
-        )
+        # ========== カード形式の編集UI ==========
 
-        # フィルタ適用時は読み取り専用表示
-        if upsell_search.strip():
-            keyword = upsell_search.strip()
-            upsell_df = pd.DataFrame(mappings) if mappings else pd.DataFrame(
-                columns=["from_name", "upsell_name", "upsell_upsell_name"]
-            )
-            mask = (
-                upsell_df["from_name"].str.contains(keyword, case=False, na=False)
-                | upsell_df["upsell_name"].str.contains(keyword, case=False, na=False)
-                | upsell_df["upsell_upsell_name"].astype(str).str.contains(keyword, case=False, na=False)
-            )
-            filtered_upsell = upsell_df[mask]
-            st.info(f"🔍 {len(filtered_upsell)} / {len(upsell_df)} 件がヒット  —  フィルタを解除すると編集可能になります")
-            st.dataframe(
-                filtered_upsell,
-                column_config={
-                    "from_name": st.column_config.TextColumn("元商品名", width="large"),
-                    "upsell_name": st.column_config.TextColumn("アップセル先", width="large"),
-                    "upsell_upsell_name": st.column_config.TextColumn("アップセルアップセル先", width="large"),
-                },
-                use_container_width=True,
-                height=400,
-            )
-        else:
-            # ========== カード形式の編集UI (グループ単位) ==========
+        # session_state でグループ化したマッピングを管理
+        if "upsell_groups_edit" not in st.session_state:
+            st.session_state["upsell_groups_edit"] = _mappings_to_groups(mappings)
 
-            # session_state でグループ化したマッピングを管理
-            if "upsell_groups_edit" not in st.session_state:
-                st.session_state["upsell_groups_edit"] = _mappings_to_groups(mappings)
+        edit_groups: list[dict] = st.session_state["upsell_groups_edit"]
 
-            edit_groups: list[dict] = st.session_state["upsell_groups_edit"]
+        for idx, group in enumerate(edit_groups):
+            with st.container(border=True):
+                header_col, del_col = st.columns([10, 1])
+                with header_col:
+                    st.markdown(f"**マッピング {idx + 1}**")
+                with del_col:
+                    if st.button("🗑️", key=f"del_{idx}", help="この行を削除"):
+                        edit_groups.pop(idx)
+                        st.session_state["upsell_groups_edit"] = edit_groups
+                        st.rerun()
 
-            _MANUAL_OPTION = "✏️ 手動入力..."
+                # 類似度ソートの基準
+                ref_name = (group.get("from_names") or [""])[0]
+                sorted_candidates = _sort_by_similarity(all_product_names, ref_name)
 
-            for idx, group in enumerate(edit_groups):
-                with st.container(border=True):
-                    header_col, del_col = st.columns([10, 1])
-                    with header_col:
-                        st.markdown(f"**マッピング {idx + 1}**")
-                    with del_col:
-                        if st.button("🗑️", key=f"del_{idx}", help="この行を削除"):
-                            edit_groups.pop(idx)
-                            st.session_state["upsell_groups_edit"] = edit_groups
-                            st.rerun()
+                # --- アップセル商品 (multiselect) ---
+                current_upsells = group.get("upsell_names", [])
+                upsell_options = list(sorted_candidates)
+                for cv in current_upsells:
+                    if cv and cv not in upsell_options:
+                        upsell_options.insert(0, cv)
 
-                    # --- 元商品名 (ドロップダウン) ---
-                    current_from = group.get("from_name", "")
-                    from_options = list(all_product_names)
-                    if current_from and current_from not in from_options:
-                        from_options.insert(0, current_from)
+                sel_upsells = st.multiselect(
+                    "アップセル商品（複数選択可）",
+                    upsell_options,
+                    default=current_upsells,
+                    key=f"upsell_{idx}",
+                )
+                group["upsell_names"] = sel_upsells
 
-                    from_index = from_options.index(current_from) if current_from in from_options else 0
-                    selected_from = st.selectbox(
-                        "元商品名",
-                        from_options,
-                        index=from_index if current_from else None,
-                        placeholder="商品名を選択...",
-                        key=f"from_{idx}",
-                    )
-                    group["from_name"] = selected_from or ""
+                # --- 通常商品 (multiselect) ---
+                current_froms = group.get("from_names", [])
+                from_options = list(sorted_candidates)
+                for cv in current_froms:
+                    if cv and cv not in from_options:
+                        from_options.insert(0, cv)
 
-                    # 類似度ソートの基準
-                    ref_name = group["from_name"]
-                    sorted_candidates = _sort_by_similarity(all_product_names, ref_name)
+                sel_froms = st.multiselect(
+                    "通常商品（複数選択可）",
+                    from_options,
+                    default=current_froms,
+                    key=f"from_{idx}",
+                )
+                group["from_names"] = sel_froms
 
-                    col_up, col_upup = st.columns(2)
+                # --- アップセルアップセル先 (multiselect) ---
+                current_upups = group.get("upsell_upsell_names", [])
+                upup_ref = (group.get("upsell_names") or [""])[0] or ref_name
+                sorted_upup = _sort_by_similarity(all_product_names, upup_ref)
+                upup_options = list(sorted_upup)
+                for cv in current_upups:
+                    if cv and cv not in upup_options:
+                        upup_options.insert(0, cv)
 
-                    # --- アップセル先 (multiselect) ---
-                    with col_up:
-                        current_upsells = group.get("upsell_names", [])
-                        # 候補リスト: 類似度順 (現在値がリストになくても選択済みとして表示される)
-                        upsell_options = sorted_candidates
-                        # 現在値がBQ一覧にない場合は先頭に追加
-                        for cv in current_upsells:
-                            if cv and cv not in upsell_options:
-                                upsell_options.insert(0, cv)
+                sel_upups = st.multiselect(
+                    "アップセルアップセル先（任意）",
+                    upup_options,
+                    default=current_upups,
+                    key=f"upup_{idx}",
+                )
+                group["upsell_upsell_names"] = sel_upups
 
-                        use_manual_upsell = st.session_state.get(f"manual_upsell_{idx}", False)
+        # --- 行追加ボタン ---
+        if st.button("＋ マッピングを追加", key="add_mapping"):
+            edit_groups.append({"from_names": [], "upsell_names": [], "upsell_upsell_names": []})
+            st.session_state["upsell_groups_edit"] = edit_groups
+            st.rerun()
 
-                        if not use_manual_upsell:
-                            sel_upsells = st.multiselect(
-                                "アップセル先 (複数選択可)",
-                                upsell_options,
-                                default=current_upsells,
-                                key=f"upsell_{idx}",
-                            )
-                            group["upsell_names"] = sel_upsells
-                            if st.button("✏️ 手動入力", key=f"to_manual_up_{idx}", help="一覧にない商品名を入力"):
-                                st.session_state[f"manual_upsell_{idx}"] = True
-                                st.rerun()
-                        else:
-                            manual_val = st.text_input(
-                                "アップセル先を追加 (手動入力)",
-                                value="",
-                                key=f"upsell_manual_{idx}",
-                                placeholder="商品名を入力してEnter...",
-                            )
-                            if manual_val.strip():
-                                if manual_val.strip() not in group.get("upsell_names", []):
-                                    group["upsell_names"].append(manual_val.strip())
-                            st.caption(f"現在の選択: {', '.join(group.get('upsell_names', [])) or 'なし'}")
-                            if st.button("一覧から選ぶ", key=f"back_upsell_{idx}"):
-                                st.session_state[f"manual_upsell_{idx}"] = False
-                                st.rerun()
-
-                    # --- アップセルアップセル先 (multiselect) ---
-                    with col_upup:
-                        current_upups = group.get("upsell_upsell_names", [])
-                        upup_ref = group.get("upsell_names", [""])[0] if group.get("upsell_names") else ref_name
-                        sorted_upup = _sort_by_similarity(all_product_names, upup_ref)
-                        upup_options = sorted_upup
-                        for cv in current_upups:
-                            if cv and cv not in upup_options:
-                                upup_options.insert(0, cv)
-
-                        use_manual_upup = st.session_state.get(f"manual_upup_{idx}", False)
-
-                        if not use_manual_upup:
-                            sel_upups = st.multiselect(
-                                "アップセルアップセル先 (複数選択可)",
-                                upup_options,
-                                default=current_upups,
-                                key=f"upup_{idx}",
-                            )
-                            group["upsell_upsell_names"] = sel_upups
-                            if st.button("✏️ 手動入力", key=f"to_manual_upup_{idx}", help="一覧にない商品名を入力"):
-                                st.session_state[f"manual_upup_{idx}"] = True
-                                st.rerun()
-                        else:
-                            manual_upup = st.text_input(
-                                "アップセルアップセル先を追加 (手動入力)",
-                                value="",
-                                key=f"upup_manual_{idx}",
-                                placeholder="商品名を入力してEnter...",
-                            )
-                            if manual_upup.strip():
-                                if manual_upup.strip() not in group.get("upsell_upsell_names", []):
-                                    group["upsell_upsell_names"].append(manual_upup.strip())
-                            st.caption(f"現在の選択: {', '.join(group.get('upsell_upsell_names', [])) or 'なし'}")
-                            if st.button("一覧から選ぶ", key=f"back_upup_{idx}"):
-                                st.session_state[f"manual_upup_{idx}"] = False
-                                st.rerun()
-
-            # --- 行追加ボタン ---
-            if st.button("＋ マッピングを追加", key="add_mapping"):
-                edit_groups.append({"from_name": "", "upsell_names": [], "upsell_upsell_names": []})
-                st.session_state["upsell_groups_edit"] = edit_groups
-                st.rerun()
-
-            # --- 保存ボタン ---
-            st.markdown("")
-            if st.button("保存", type="primary", key="save_upsell"):
-                valid_groups = [g for g in edit_groups if g.get("from_name") and g.get("upsell_names")]
-                flat_mappings = _groups_to_mappings(valid_groups)
-                save_upsell_mappings(flat_mappings)
-                st.session_state["upsell_groups_edit"] = valid_groups
-                st.success(f"{len(flat_mappings)} 件のマッピングを保存しました。")
-                st.rerun()
+        # --- 保存ボタン ---
+        st.markdown("")
+        if st.button("保存", type="primary", key="save_upsell"):
+            valid_groups = [g for g in edit_groups if g.get("from_names") and g.get("upsell_names")]
+            flat_mappings = _groups_to_mappings(valid_groups)
+            save_upsell_mappings(flat_mappings)
+            st.session_state["upsell_groups_edit"] = valid_groups
+            st.success(f"{len(flat_mappings)} 件のマッピングを保存しました。")
+            st.rerun()

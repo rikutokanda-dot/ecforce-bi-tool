@@ -259,7 +259,7 @@ def build_upsell_sql(
 
 def build_upsell_rate_sql(
     company_key: str,
-    normal_product_name: str,
+    normal_product_names: str | list[str],
     upsell_product_name: str,
     date_from: str | None = None,
     date_to: str | None = None,
@@ -270,9 +270,16 @@ def build_upsell_rate_sql(
     その期間中の通常商品とアップセル商品の1回目購入数から
     アップセル切替率を算出する。
 
+    normal_product_names は単一文字列またはリストを受け付ける。
+
     アップセル率 = upsell_1回目購入数 / (normal_1回目購入数 + upsell_1回目購入数)
     """
     table = get_table_ref(company_key)
+
+    # normal_product_names をリスト化
+    if isinstance(normal_product_names, str):
+        normal_product_names = [normal_product_names]
+    normal_in = ", ".join(f"'{n}'" for n in normal_product_names)
 
     # ユーザー日付フィルタとの交差期間計算
     period_start_expr = "p.period_start"
@@ -305,7 +312,7 @@ def build_upsell_rate_sql(
       SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS normal_count
       FROM {table}
       CROSS JOIN effective_period ep
-      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{normal_product_name}'
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({normal_in})
         AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
@@ -337,7 +344,7 @@ def build_upsell_rate_sql(
 
 def build_upsell_rate_monthly_sql(
     company_key: str,
-    normal_product_name: str,
+    normal_product_names: str | list[str],
     upsell_product_name: str,
     date_from: str | None = None,
     date_to: str | None = None,
@@ -346,8 +353,13 @@ def build_upsell_rate_monthly_sql(
 
     アップセル商品が購入されている期間内で、月ごとの
     通常商品とアップセル商品の1回目購入数からアップセル率を算出。
+    normal_product_names は単一文字列またはリストを受け付ける。
     """
     table = get_table_ref(company_key)
+
+    if isinstance(normal_product_names, str):
+        normal_product_names = [normal_product_names]
+    normal_in = ", ".join(f"'{n}'" for n in normal_product_names)
 
     period_start_expr = "p.period_start"
     period_end_expr = "p.period_end"
@@ -381,7 +393,7 @@ def build_upsell_rate_monthly_sql(
         COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS normal_count
       FROM {table}
       CROSS JOIN effective_period ep
-      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{normal_product_name}'
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({normal_in})
         AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'

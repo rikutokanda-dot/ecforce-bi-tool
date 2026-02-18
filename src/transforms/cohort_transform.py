@@ -417,8 +417,6 @@ def build_product_summary_table(
     survival_row = {"指標": "残存率"}
     count_row = {"指標": "残存数"}
 
-    prev_retained = None
-
     for i in range(1, MAX_RETENTION_MONTHS + 1):
         col = f"retained_{i}"
         if col not in group.columns:
@@ -442,17 +440,23 @@ def build_product_summary_table(
 
         survival_rate = round(retained / eligible_total * 100, 1)
 
-        if prev_retained is None:
+        # 継続率(前回比): 同じeligible月のi-1回目retainedをベースにする
+        if i == 1:
             continuation_rate = survival_rate
         else:
-            continuation_rate = round(retained / prev_retained * 100, 1) if prev_retained > 0 else 0.0
+            prev_col = f"retained_{i - 1}"
+            if prev_col in eligible_rows.columns:
+                prev_retained_same = float(
+                    pd.to_numeric(eligible_rows[prev_col], errors="coerce").fillna(0).sum()
+                )
+            else:
+                prev_retained_same = eligible_total
+            continuation_rate = round(retained / prev_retained_same * 100, 1) if prev_retained_same > 0 else 0.0
 
         label = f"{i}回目"
         continuation_row[label] = f"{continuation_rate}%"
         survival_row[label] = f"{survival_rate}%"
         count_row[label] = f"{int(retained)}件"
-
-        prev_retained = retained
 
     if len(continuation_row) <= 1:
         return pd.DataFrame()
@@ -481,8 +485,6 @@ def build_dimension_summary_table(
     survival_row = {"指標": "残存率"}
     count_row = {"指標": "残存数"}
 
-    prev_retained = total_users
-
     for i in range(1, MAX_RETENTION_MONTHS + 1):
         col = f"retained_{i}"
         if col not in group.columns:
@@ -492,14 +494,22 @@ def build_dimension_summary_table(
             break
 
         survival_rate = round(retained / total_users * 100, 1) if total_users > 0 else 0.0
-        continuation_rate = round(retained / prev_retained * 100, 1) if prev_retained > 0 else 0.0
+
+        # 継続率(前回比): i-1回目のretainedをベースにする
+        if i == 1:
+            continuation_rate = round(retained / total_users * 100, 1) if total_users > 0 else 0.0
+        else:
+            prev_col = f"retained_{i - 1}"
+            if prev_col in group.columns:
+                prev_retained = float(pd.to_numeric(group[prev_col], errors="coerce").fillna(0).sum())
+            else:
+                prev_retained = total_users
+            continuation_rate = round(retained / prev_retained * 100, 1) if prev_retained > 0 else 0.0
 
         label = f"{i}回目"
         continuation_row[label] = f"{continuation_rate}%"
         survival_row[label] = f"{survival_rate}%"
         count_row[label] = f"{int(retained)}件"
-
-        prev_retained = retained
 
     return pd.DataFrame([continuation_row, survival_row, count_row])
 

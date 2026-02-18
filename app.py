@@ -35,12 +35,11 @@ st.markdown(
     div[data-baseweb="popover"] ul {
         max-width: none !important;
     }
-    /* 選択済みタグ: コンパクト表示 + ホバーで全文ツールチップ */
+    /* 選択済みタグ: コンパクト表示 */
     span[data-baseweb="tag"] {
         max-width: 180px !important;
         white-space: nowrap !important;
         height: auto !important;
-        position: relative !important;
     }
     span[data-baseweb="tag"] > span:first-child {
         white-space: nowrap !important;
@@ -48,23 +47,6 @@ st.markdown(
         text-overflow: ellipsis !important;
         max-width: 140px !important;
         display: inline-block !important;
-    }
-    /* ホバー時にツールチップ表示 */
-    span[data-baseweb="tag"]:hover > span:first-child {
-        overflow: visible !important;
-        white-space: normal !important;
-        position: absolute !important;
-        background: #333 !important;
-        color: #fff !important;
-        padding: 4px 8px !important;
-        border-radius: 4px !important;
-        z-index: 9999 !important;
-        max-width: 500px !important;
-        min-width: 200px !important;
-        top: -2px !important;
-        left: 0 !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
-        word-break: break-all !important;
     }
     /* サイドバー内のタグは幅制限きつめ */
     [data-testid="stSidebar"] span[data-baseweb="tag"] {
@@ -77,6 +59,38 @@ st.markdown(
     div[data-baseweb="select"] > div:first-child {
         max-height: none !important;
         flex-wrap: wrap !important;
+    }
+    /* サイドバー: ホバー時に画面半分まで拡張 */
+    [data-testid="stSidebar"] {
+        transition: width 0.3s ease, min-width 0.3s ease !important;
+    }
+    [data-testid="stSidebar"]:hover {
+        width: 50vw !important;
+        min-width: 50vw !important;
+        max-width: 50vw !important;
+    }
+    /* サイドバー内のドロップダウンが開いている間もサイドバーを広げたままにする
+       aria-expanded="true" はサイドバー内のselectが開いている時のみ付く */
+    [data-testid="stSidebar"]:has([aria-expanded="true"]) {
+        width: 50vw !important;
+        min-width: 50vw !important;
+        max-width: 50vw !important;
+    }
+    /* サイドバー内のコンテンツも広がる */
+    [data-testid="stSidebar"]:hover [data-testid="stSidebarContent"],
+    [data-testid="stSidebar"]:has([aria-expanded="true"]) [data-testid="stSidebarContent"] {
+        width: 100% !important;
+    }
+    /* サイドバー拡張時はタグも全文表示 */
+    [data-testid="stSidebar"]:hover span[data-baseweb="tag"],
+    [data-testid="stSidebar"]:has([aria-expanded="true"]) span[data-baseweb="tag"] {
+        max-width: none !important;
+    }
+    [data-testid="stSidebar"]:hover span[data-baseweb="tag"] > span:first-child,
+    [data-testid="stSidebar"]:has([aria-expanded="true"]) span[data-baseweb="tag"] > span:first-child {
+        max-width: none !important;
+        overflow: visible !important;
+        text-overflow: unset !important;
     }
     </style>
     """,

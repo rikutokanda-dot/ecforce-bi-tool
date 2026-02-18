@@ -106,7 +106,7 @@ def _upsell_label_html(title: str, before_name: str, after_name: str) -> str:
 def _render_upsell_pair(
     client,
     company_key: str,
-    normal_name: str,
+    normal_names: str | list[str],
     upsell_name: str,
     label_title: str,
     date_from_str: str | None,
@@ -119,7 +119,7 @@ def _render_upsell_pair(
     # skip_if_no_normal の場合、まずデータ有無を確認してからフラグメント描画
     if skip_if_no_normal:
         sql_check = build_upsell_rate_sql(
-            company_key, normal_name, upsell_name,
+            company_key, normal_names, upsell_name,
             date_from_str, date_to_str,
         )
         try:
@@ -133,7 +133,7 @@ def _render_upsell_pair(
 
     # フラグメントとして描画（日付変更時にここだけ再実行）
     _upsell_pair_fragment(
-        client, company_key, normal_name, upsell_name,
+        client, company_key, normal_names, upsell_name,
         label_title, date_from_str, date_to_str,
         pair_key=pair_key,
     )
@@ -143,7 +143,7 @@ def _render_upsell_pair(
 def _upsell_pair_fragment(
     client,
     company_key: str,
-    normal_name: str,
+    normal_names: str | list[str],
     upsell_name: str,
     label_title: str,
     date_from_str: str | None,
@@ -152,7 +152,14 @@ def _upsell_pair_fragment(
     pair_key: str = "",
 ):
     """フラグメント化されたアップセル率表示。日付変更時にこの部分だけ再実行。"""
-    _key_base = pair_key or f"{normal_name}_{upsell_name}"
+    # normal_names をリスト化して表示用文字列を作る
+    if isinstance(normal_names, str):
+        _normal_list = [normal_names]
+    else:
+        _normal_list = list(normal_names)
+    _normal_display = ", ".join(_normal_list)
+
+    _key_base = pair_key or f"{'_'.join(_normal_list)}_{upsell_name}"
     _k_from = f"us_period_from_{_key_base}"
     _k_to = f"us_period_to_{_key_base}"
 
@@ -168,14 +175,16 @@ def _upsell_pair_fragment(
         query_to = date_to_str
 
     sql = build_upsell_rate_sql(
-        company_key, normal_name, upsell_name,
+        company_key, _normal_list, upsell_name,
         query_from, query_to,
     )
     try:
         df = execute_query(client, sql)
         if df.empty or df["upsell_rate"].iloc[0] is None:
-            st.markdown(_upsell_label_html(label_title, normal_name, upsell_name))
-            st.caption("データなし")
+            st.markdown(f"**{label_title}**　データなし")
+            st.markdown(f"<small>US前：{_normal_display}<br>US後：{upsell_name}</small>",
+                        unsafe_allow_html=True)
+            st.divider()
             return
         row = df.iloc[0]
         rate = round(float(row["upsell_rate"]), 1)
@@ -184,7 +193,15 @@ def _upsell_pair_fragment(
         period_start = str(row["period_start"])[:10]
         period_end = str(row["period_end"])[:10]
 
-        st.markdown(_upsell_label_html(label_title, normal_name, upsell_name))
+        # 1行目: アップセル率 ~~%　通常:-人/アップセル:-人
+        st.markdown(
+            f"**{label_title}　{rate}%**　　通常: {normal_count:,}人 / アップセル: {upsell_count:,}人"
+        )
+        # 2行目: US前/US後
+        st.markdown(
+            f"<small>US前：{_normal_display}<br>US後：{upsell_name}</small>",
+            unsafe_allow_html=True,
+        )
 
         # 対象期間を date_input で表示（初回は自動検出値をデフォルトに）
         if not has_override:
@@ -197,17 +214,22 @@ def _upsell_pair_fragment(
         with dcols[1]:
             st.date_input("対象終了日", key=_k_to)
 
-        st.metric("", f"{rate}%")
-        st.caption(f"通常: {normal_count:,}人 / アップセル: {upsell_count:,}人")
+        # 仕切り線
+        st.divider()
     except Exception as e:
-        st.markdown(_upsell_label_html(label_title, normal_name, upsell_name))
-        st.caption(f"エラー ({e})")
+        st.markdown(f"**{label_title}**　エラー")
+        st.markdown(
+            f"<small>US前：{_normal_display}<br>US後：{upsell_name}</small>",
+            unsafe_allow_html=True,
+        )
+        st.caption(f"({e})")
+        st.divider()
 
 
 def _render_upsell_monthly(
     client,
     company_key: str,
-    normal_name: str,
+    normal_names: str | list[str],
     upsell_name: str,
     label_title: str,
     date_from_str: str | None,
@@ -216,11 +238,17 @@ def _render_upsell_monthly(
     skip_if_no_normal: bool = False,
 ):
     """月別アップセル率テーブル+グラフを表示."""
+    if isinstance(normal_names, str):
+        _normal_list = [normal_names]
+    else:
+        _normal_list = list(normal_names)
+    _normal_display = ", ".join(_normal_list)
+
     sql = build_upsell_rate_monthly_sql(
-        company_key, normal_name, upsell_name,
+        company_key, _normal_list, upsell_name,
         date_from_str, date_to_str,
     )
-    label_md = _upsell_label_html(label_title, normal_name, upsell_name)
+    label_md = _upsell_label_html(label_title, _normal_display, upsell_name)
     try:
         df = execute_query(client, sql)
         if df.empty:
@@ -283,7 +311,6 @@ with st.sidebar:
     filters = render_cohort_filters(company_key)
 
 client = get_bigquery_client()
-drilldown_col = filters["drilldown_column"]
 
 date_from_str = date_from.strftime("%Y-%m-%d") if date_from else None
 date_to_str = date_to.strftime("%Y-%m-%d") if date_to else None
@@ -324,111 +351,149 @@ main_tab_drilldown, main_tab_aggregate, main_tab_monthly, main_tab_upsell = st.t
 
 
 # =====================================================================
-# ドリルダウンタブ (デフォルト: 定期商品名別)
+# ドリルダウンタブ — サブタブで軸を切り替え
 # =====================================================================
 with main_tab_drilldown:
-    dd_col = drilldown_col  # サイドバーで選択されたドリルダウン軸
+    dd_tab_product, dd_tab_adgroup, dd_tab_category = st.tabs(
+        ["定期商品名", "広告グループ", "商品カテゴリ"]
+    )
 
-    if dd_col is None:
-        st.info("サイドバーからドリルダウン軸を選択してください。")
-    elif not st.button("表示する", key="btn_drilldown", type="primary"):
-        st.info("フィルタを設定して「表示する」を押してください。")
-    else:
-        dd_sql = build_drilldown_sql(drilldown_column=dd_col, **filter_params)
-        try:
-            dd_df = execute_query(client, dd_sql)
-        except Exception as e:
-            st.error(f"BigQueryクエリ実行エラー: {e}")
-            st.stop()
-
-        if dd_df.empty:
-            st.info("該当するデータが見つかりませんでした。")
+    # ========== 定期商品名 ==========
+    with dd_tab_product:
+        if st.button("表示する", key="btn_dd_product", type="primary"):
+            st.session_state["dd_product_shown"] = True
+        if not st.session_state.get("dd_product_shown"):
+            st.info("フィルタを設定して「表示する」を押してください。")
         else:
-            dimension_values = sorted(dd_df["dimension_col"].unique())
+            dd_sql = build_drilldown_sql(
+                drilldown_column=Col.SUBSCRIPTION_PRODUCT_NAME, **filter_params
+            )
+            try:
+                dd_df = execute_query(client, dd_sql)
+            except Exception as e:
+                st.error(f"BigQueryクエリ実行エラー: {e}")
+                dd_df = pd.DataFrame()
 
-            # ドリルダウン軸のラベル
-            dd_label_map = {
-                Col.SUBSCRIPTION_PRODUCT_NAME: "定期商品名",
-                Col.AD_GROUP: "広告グループ",
-                Col.PRODUCT_CATEGORY: "商品カテゴリ",
-            }
-            dd_axis_label = dd_label_map.get(dd_col, "グループ")
-            st.info(f"**{dd_axis_label}別**: {len(dimension_values)} 件")
-            st.caption(f"データカットオフ日: {data_cutoff_date}")
+            if dd_df.empty:
+                st.info("該当するデータが見つかりませんでした。")
+            else:
+                # デフォルト: 文字数少ない順
+                dim_raw = list(dd_df["dimension_col"].unique())
+                dim_sorted = sorted(dim_raw, key=len)
 
-            # ---------- 定期商品名 別 ----------
-            if dd_col == Col.SUBSCRIPTION_PRODUCT_NAME:
-                dd_sub_retention, dd_sub_upsell = st.tabs(["継続率", "アップセル率"])
+                # ユーザーが並び替えた順序が保存されていればそれを使う
+                _order_key = "dd_product_order"
+                if _order_key in st.session_state:
+                    saved = st.session_state[_order_key]
+                    # 保存済み順序に存在する値のみ残し、新規分を末尾に追加
+                    ordered = [v for v in saved if v in set(dim_raw)]
+                    new_vals = [v for v in dim_sorted if v not in set(ordered)]
+                    dimension_values = ordered + new_vals
+                else:
+                    dimension_values = dim_sorted
 
-                with dd_sub_retention:
-                    for pname in dimension_values:
-                        with st.expander(f"{pname}", expanded=False):
-                            summary = build_product_summary_table(dd_df, pname, data_cutoff_date)
-                            if summary.empty:
-                                st.info("データがありません。")
-                                continue
-                            st.dataframe(summary, use_container_width=True, hide_index=True)
+                st.info(f"**定期商品名別**: {len(dimension_values)} 件")
+                st.caption(f"データカットオフ日: {data_cutoff_date}")
 
-                with dd_sub_upsell:
-                    has_any_mapping = False
-                    for pname in dimension_values:
-                        targets = get_upsell_targets(pname)
-                        if not targets:
-                            continue
-                        has_any_mapping = True
-                        with st.expander(f"{pname}", expanded=False):
-                            # グループ化: upsell_names と upsell_upsell_names を集約
-                            _dd_upsell_names = []
-                            _dd_upsell_upsell_names = []
-                            for t in targets:
-                                un = t.get("upsell_name", "")
-                                uun = t.get("upsell_upsell_name")
-                                if un and un not in _dd_upsell_names:
-                                    _dd_upsell_names.append(un)
-                                if uun and uun not in _dd_upsell_upsell_names:
-                                    _dd_upsell_upsell_names.append(uun)
+                # 並び替えUI
+                sort_opt = st.radio(
+                    "並び順",
+                    ["文字数少ない順", "文字数多い順", "名前昇順", "名前降順"],
+                    horizontal=True,
+                    key="dd_product_sort",
+                )
+                if sort_opt == "文字数少ない順":
+                    dimension_values = sorted(dimension_values, key=len)
+                elif sort_opt == "文字数多い順":
+                    dimension_values = sorted(dimension_values, key=len, reverse=True)
+                elif sort_opt == "名前昇順":
+                    dimension_values = sorted(dimension_values)
+                elif sort_opt == "名前降順":
+                    dimension_values = sorted(dimension_values, reverse=True)
 
-                            # アップセル率
-                            for _ui, un in enumerate(_dd_upsell_names):
-                                _render_upsell_pair(
-                                    client, company_key,
-                                    pname, un,
-                                    "アップセル率",
-                                    date_from_str, date_to_str,
-                                    pair_key=f"dd_{pname[:10]}_{_ui}",
-                                )
+                # 並び順を保存
+                st.session_state[_order_key] = list(dimension_values)
 
-                            # アップアップセル率: 各 upsell × 各 upsell_upsell
-                            if _dd_upsell_upsell_names:
-                                st.divider()
-                                for _uui, uun in enumerate(_dd_upsell_upsell_names):
-                                    for _ui2, un in enumerate(_dd_upsell_names):
-                                        _render_upsell_pair(
-                                            client, company_key,
-                                            un, uun,
-                                            "ｱｯﾌﾟｱｯﾌﾟｾﾙ率",
-                                            date_from_str, date_to_str,
-                                            skip_if_no_normal=True,
-                                            pair_key=f"dd_uu_{pname[:10]}_{_uui}_{_ui2}",
-                                        )
-                    if not has_any_mapping:
-                        st.info("アップセルマッピングが設定されている商品がありません。マスタ管理で設定してください。")
-
-            # ---------- 広告グループ 別 ----------
-            elif dd_col == Col.AD_GROUP:
-                for grp_name in dimension_values:
-                    with st.expander(f"{grp_name}", expanded=False):
-                        summary = build_dimension_summary_table(dd_df, grp_name)
+                for pname in dimension_values:
+                    with st.expander(f"{pname}", expanded=False):
+                        summary = build_product_summary_table(dd_df, pname, data_cutoff_date)
                         if summary.empty:
                             st.info("データがありません。")
                             continue
                         st.dataframe(summary, use_container_width=True, hide_index=True)
 
-            # ---------- 商品カテゴリ 別 ----------
-            elif dd_col == Col.PRODUCT_CATEGORY:
-                for cat_name in dimension_values:
+    # ========== 広告グループ ==========
+    with dd_tab_adgroup:
+        if st.button("表示する", key="btn_dd_adgroup", type="primary"):
+            st.session_state["dd_adgroup_shown"] = True
+        if not st.session_state.get("dd_adgroup_shown"):
+            st.info("フィルタを設定して「表示する」を押してください。")
+        else:
+            dd_sql_ag = build_drilldown_sql(
+                drilldown_column=Col.AD_GROUP, **filter_params
+            )
+            try:
+                dd_df_ag = execute_query(client, dd_sql_ag)
+            except Exception as e:
+                st.error(f"BigQueryクエリ実行エラー: {e}")
+                dd_df_ag = pd.DataFrame()
+
+            if dd_df_ag.empty:
+                st.info("該当するデータが見つかりませんでした。")
+            else:
+                dim_ag = sorted(dd_df_ag["dimension_col"].unique())
+                st.info(f"**広告グループ別**: {len(dim_ag)} 件")
+                st.caption(f"データカットオフ日: {data_cutoff_date}")
+                for grp_name in dim_ag:
+                    with st.expander(f"{grp_name}", expanded=False):
+                        summary = build_dimension_summary_table(dd_df_ag, grp_name)
+                        if summary.empty:
+                            st.info("データがありません。")
+                            continue
+                        st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    # ========== 商品カテゴリ ==========
+    with dd_tab_category:
+        if st.button("表示する", key="btn_dd_category", type="primary"):
+            st.session_state["dd_category_shown"] = True
+        if not st.session_state.get("dd_category_shown"):
+            st.info("フィルタを設定して「表示する」を押してください。")
+        else:
+            dd_sql_cat = build_drilldown_sql(
+                drilldown_column=Col.PRODUCT_CATEGORY, **filter_params
+            )
+            try:
+                dd_df_cat = execute_query(client, dd_sql_cat)
+            except Exception as e:
+                st.error(f"BigQueryクエリ実行エラー: {e}")
+                dd_df_cat = pd.DataFrame()
+
+            if dd_df_cat.empty:
+                st.info("該当するデータが見つかりませんでした。")
+            else:
+                # カテゴリごとの定期商品名を取得
+                _cat_product_map: dict[str, list[str]] = {}
+                _table_ref = get_table_ref(company_key)
+                for _cat in dd_df_cat["dimension_col"].unique():
+                    try:
+                        _pnames = fetch_filtered_options(
+                            client, _table_ref, Col.SUBSCRIPTION_PRODUCT_NAME,
+                            {Col.PRODUCT_CATEGORY: [_cat]},
+                        )
+                        _cat_product_map[_cat] = _pnames
+                    except Exception:
+                        _cat_product_map[_cat] = []
+
+                dim_cat = sorted(dd_df_cat["dimension_col"].unique())
+                st.info(f"**商品カテゴリ別**: {len(dim_cat)} 件")
+                st.caption(f"データカットオフ日: {data_cutoff_date}")
+                for cat_name in dim_cat:
                     with st.expander(f"カテゴリ: {cat_name}", expanded=False):
-                        summary = build_dimension_summary_table(dd_df, cat_name)
+                        # カテゴリに含まれる定期商品名を小さく表示
+                        _pnames_in_cat = _cat_product_map.get(cat_name, [])
+                        if _pnames_in_cat:
+                            st.caption(f"対象商品: {', '.join(_pnames_in_cat)}")
+                        summary = build_dimension_summary_table(dd_df_cat, cat_name)
                         if summary.empty:
                             st.info("データがありません。")
                             continue
@@ -686,9 +751,12 @@ with main_tab_upsell:
     _upsell_filter_pnames = filters.get("product_names")
     _upsell_filter_cats = filters.get("product_categories")
     if _upsell_filter_pnames:
-        # 商品名が選択されていれば from_name で絞る
+        # 商品名が選択されていれば from_names に含まれるか
         _pname_set = set(_upsell_filter_pnames)
-        all_mappings = [m for m in _all_mappings_raw if m.get("from_name") in _pname_set]
+        all_mappings = [
+            m for m in _all_mappings_raw
+            if _pname_set & set(m.get("from_names", []))
+        ]
     elif _upsell_filter_cats:
         # 商品カテゴリが選択されていれば、そのカテゴリに属する商品名を取得してフィルタ
         _table_ref = get_table_ref(company_key)
@@ -697,7 +765,10 @@ with main_tab_upsell:
             {Col.PRODUCT_CATEGORY: _upsell_filter_cats},
         )
         _cat_pname_set = set(_cat_product_names)
-        all_mappings = [m for m in _all_mappings_raw if m.get("from_name") in _cat_pname_set]
+        all_mappings = [
+            m for m in _all_mappings_raw
+            if _cat_pname_set & set(m.get("from_names", []))
+        ]
     else:
         all_mappings = list(_all_mappings_raw)
 
@@ -711,69 +782,76 @@ with main_tab_upsell:
         if not st.session_state.get("upsell_tab_shown"):
             st.info("「表示する」を押すとアップセル率を計算します。")
         else:
-            # from_name 単位でグループ化
-            _upsell_groups: dict[str, dict] = {}
+            # upsell_name 単位でグループ化（1アコーディオン = 1 US後商品）
+            _upsell_items: list[dict] = []
+            _seen_upsell: dict[str, int] = {}
             for m in all_mappings:
-                fn = m.get("from_name", "")
+                fns = m.get("from_names", [])
                 un = m.get("upsell_name", "")
                 uun = m.get("upsell_upsell_name")
-                if not fn or not un:
+                if not fns or not un:
                     continue
-                if fn not in _upsell_groups:
-                    _upsell_groups[fn] = {"upsell_names": [], "upsell_upsell_names": []}
-                if un not in _upsell_groups[fn]["upsell_names"]:
-                    _upsell_groups[fn]["upsell_names"].append(un)
-                if uun and uun not in _upsell_groups[fn]["upsell_upsell_names"]:
-                    _upsell_groups[fn]["upsell_upsell_names"].append(uun)
+                if un not in _seen_upsell:
+                    _seen_upsell[un] = len(_upsell_items)
+                    _upsell_items.append({
+                        "from_names": list(fns),
+                        "upsell_name": un,
+                        "upsell_upsell_names": [uun] if uun else [],
+                    })
+                else:
+                    item = _upsell_items[_seen_upsell[un]]
+                    for fn in fns:
+                        if fn not in item["from_names"]:
+                            item["from_names"].append(fn)
+                    if uun and uun not in item["upsell_upsell_names"]:
+                        item["upsell_upsell_names"].append(uun)
 
             upsell_sub_agg, upsell_sub_monthly = st.tabs(["通算", "月別"])
 
             # ---------- 通算アップセル率 ----------
             with upsell_sub_agg:
-                for _gi, (from_name, group) in enumerate(_upsell_groups.items()):
-                    with st.expander(f"📦 {from_name}", expanded=True):
-                        # アップセル率: 各 upsell_name
-                        for _ui, un in enumerate(group["upsell_names"]):
-                            _render_upsell_pair(
-                                client, company_key,
-                                from_name, un,
-                                "アップセル率",
-                                date_from_str, date_to_str,
-                                pair_key=f"agg_{_gi}_{_ui}",
-                            )
-                        # アップアップセル率: 各 upsell_name × 各 upsell_upsell_name
-                        if group["upsell_upsell_names"]:
+                for _gi, item in enumerate(_upsell_items):
+                    un = item["upsell_name"]
+                    with st.expander(f"📦 {un}", expanded=True):
+                        # アップセル率: 各 from_names → upsell_name
+                        _render_upsell_pair(
+                            client, company_key,
+                            item["from_names"], un,
+                            "アップセル率",
+                            date_from_str, date_to_str,
+                            pair_key=f"agg_{_gi}",
+                        )
+                        # アップアップセル率: upsell_name → 各 upsell_upsell_name
+                        if item["upsell_upsell_names"]:
                             st.divider()
-                            for _uui, uun in enumerate(group["upsell_upsell_names"]):
-                                for _ui2, un in enumerate(group["upsell_names"]):
-                                    _render_upsell_pair(
-                                        client, company_key,
-                                        un, uun,
-                                        "ｱｯﾌﾟｱｯﾌﾟｾﾙ率",
-                                        date_from_str, date_to_str,
-                                        skip_if_no_normal=True,
-                                        pair_key=f"agg_uu_{_gi}_{_uui}_{_ui2}",
-                                    )
+                            for _uui, uun in enumerate(item["upsell_upsell_names"]):
+                                _render_upsell_pair(
+                                    client, company_key,
+                                    un, uun,
+                                    "ｱｯﾌﾟｱｯﾌﾟｾﾙ率",
+                                    date_from_str, date_to_str,
+                                    skip_if_no_normal=True,
+                                    pair_key=f"agg_uu_{_gi}_{_uui}",
+                                )
 
             # ---------- 月別アップセル率 ----------
             with upsell_sub_monthly:
-                for from_name, group in _upsell_groups.items():
-                    with st.expander(f"📦 {from_name}", expanded=True):
-                        for un in group["upsell_names"]:
-                            _render_upsell_monthly(
-                                client, company_key,
-                                from_name, un,
-                                "アップセル率",
-                                date_from_str, date_to_str,
-                            )
-                        if group["upsell_upsell_names"]:
+                for _gi, item in enumerate(_upsell_items):
+                    un = item["upsell_name"]
+                    with st.expander(f"📦 {un}", expanded=True):
+                        _render_upsell_monthly(
+                            client, company_key,
+                            item["from_names"], un,
+                            "アップセル率",
+                            date_from_str, date_to_str,
+                        )
+                        if item["upsell_upsell_names"]:
                             st.divider()
-                            for uun in group["upsell_upsell_names"]:
-                                for un in group["upsell_names"]:
-                                    _render_upsell_monthly(
-                                        client, company_key,
-                                        un, uun,
-                                        "ｱｯﾌﾟｱｯﾌﾟｾﾙ率",
-                                        date_from_str, date_to_str,
-                                        skip_if_no_normal=True,
-                                    )
+                            for uun in item["upsell_upsell_names"]:
+                                _render_upsell_monthly(
+                                    client, company_key,
+                                    un, uun,
+                                    "ｱｯﾌﾟｱｯﾌﾟｾﾙ率",
+                                    date_from_str, date_to_str,
+                                    skip_if_no_normal=True,
+                                )

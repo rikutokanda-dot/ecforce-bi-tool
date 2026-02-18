@@ -74,12 +74,20 @@ def save_product_cycles(data: dict) -> None:
 
 
 def load_upsell_mappings() -> list[dict]:
-    """アップセルマッピングを読み込む."""
+    """アップセルマッピングを読み込む.
+
+    後方互換: from_name (文字列) → from_names (リスト) に自動変換。
+    """
     if not UPSELL_MAPPING_FILE.exists():
         return []
     with open(UPSELL_MAPPING_FILE, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-    return data.get("mappings", [])
+    raw = data.get("mappings", [])
+    # 後方互換: from_name → from_names
+    for m in raw:
+        if "from_names" not in m and "from_name" in m:
+            m["from_names"] = [m.pop("from_name")]
+    return raw
 
 
 def save_upsell_mappings(mappings: list[dict]) -> None:
@@ -97,7 +105,7 @@ def save_upsell_mappings(mappings: list[dict]) -> None:
 def get_upsell_target(product_name: str) -> dict | None:
     """商品名のアップセル先を取得. なければNone."""
     for m in load_upsell_mappings():
-        if m.get("from_name") == product_name:
+        if product_name in m.get("from_names", []):
             return m
     return None
 
@@ -107,4 +115,4 @@ def get_upsell_targets(product_name: str) -> list[dict]:
 
     1つの通常商品に複数のアップセル先がある場合に対応。
     """
-    return [m for m in load_upsell_mappings() if m.get("from_name") == product_name]
+    return [m for m in load_upsell_mappings() if product_name in m.get("from_names", [])]

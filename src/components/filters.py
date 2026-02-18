@@ -9,7 +9,7 @@ from __future__ import annotations
 import streamlit as st
 
 from src.bigquery_client import fetch_filter_options, fetch_filtered_options, get_bigquery_client
-from src.constants import Col, DRILLDOWN_OPTIONS
+from src.constants import Col
 from src.queries.common import get_table_ref
 
 
@@ -50,20 +50,8 @@ def render_cohort_filters(company_key: str) -> dict:
         "定期商品名", product_names, key="filter_product_names"
     )
 
-    st.divider()
-
-    # ドリルダウン軸 (デフォルト: 定期商品名 = 先頭)
-    drilldown_label = st.radio(
-        "ドリルダウン軸",
-        list(DRILLDOWN_OPTIONS.keys()),
-        horizontal=True,
-        key="filter_drilldown",
-    )
-    drilldown_column = DRILLDOWN_OPTIONS[drilldown_label]
-
     return {
         "product_categories": selected_categories or None,
         "ad_groups": selected_ad_groups or None,
         "product_names": selected_product_names or None,
-        "drilldown_column": drilldown_column,
     }

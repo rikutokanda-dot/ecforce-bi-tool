@@ -1,49 +1,12 @@
 mappings:
-- from_name: 肝臓パワフル習慣ネオレバルミン錠【180日間全額返金保証・初回特別価格定期コース】_INS
-  upsell_name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース】_ONS
-  upsell_upsell_name: null
-- from_name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース_chg】_INS
-  upsell_name: 肝要マキシム習慣肝要マキシム【1袋実質永久無料定期コース】_SB
-  upsell_upsell_name: null
-- from_name: シュサノン内服錠【180日間全額返金保証・定期コース】
+- from_names: &id001
+  - シュサノン内服錠【180日間全額返金保証・定期コース】
+  - シュサノンα【260日間全額返金保証・実質1袋永久無料・初回スキンケアセット付定期コース】_CHG
+  - シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG_MUSL_TK
+  - シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG_MUSL_ST_1d
+  - シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG_MUSL_ST_4d
   upsell_name: シュサノンα【180日間全額返金保証・定期コース】
-  upsell_upsell_name: シュサノンα【260日間全額返金保証・実質1袋永久無料・初回スキンケアセット付定期コース】_CHG
-- from_name: シュサノン内服錠【180日間全額返金保証・定期コース】
+  upsell_upsell_name: null
+- from_names: *id001
   upsell_name: シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG
-  upsell_upsell_name: null
-- from_name: シュサノン内服錠【180日間全額返金保証・定期コース】
-  upsell_name: シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG_MUSL_TK
-  upsell_upsell_name: null
-- from_name: シュサノン内服錠【180日間全額返金保証・定期コース】
-  upsell_name: シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG_MUSL_ST_1d
-  upsell_upsell_name: null
-- from_name: シュサノン内服錠【180日間全額返金保証・定期コース】
-  upsell_name: シュサノンα【180日間全額返金保証・初回スキンケアセット付定期コース】_CHG_MUSL_ST_4d
-  upsell_upsell_name: null
-- from_name: カンシャ【180日間全額返金保証・定期コース】_KNE
-  upsell_name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_KNE
-  upsell_upsell_name: null
-- from_name: カンシャ【180日間全額返金保証・定期コース】_KNE
-  upsell_name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_KNE_FRYUSL
-  upsell_upsell_name: null
-- from_name: カンシャ【180日間全額返金保証・定期コース】_KNE
-  upsell_name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_KNE_MUSL_TK
-  upsell_upsell_name: null
-- from_name: カンシャ【180日間全額返金保証・定期コース】_KNE
-  upsell_name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_KNE_MUSL_ST1
-  upsell_upsell_name: null
-- from_name: カンシャ【180日間全額返金保証・定期コース】_LWB
-  upsell_name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_LWB_MUSL_ST1
-  upsell_upsell_name: null
-- from_name: カンシャ【180日間全額返金保証・定期コース】_LWB
-  upsell_name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_LWB
-  upsell_upsell_name: null
-- from_name: カンシャ【180日間全額返金保証・定期コース】_LWB
-  upsell_name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_LWB_MUSL_ST2
-  upsell_upsell_name: null
-- from_name: カンシャ【180日間全額返金保証・定期コース】_LWB
-  upsell_name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_LWB_FRYUSL
-  upsell_upsell_name: null
-- from_name: カンシャ【180日間全額返金保証・定期コース】_LWB
-  upsell_name: カンシャ-puc30【260日間全額返金保証・初回実質1袋無料・2回目以降永久1000円オフ定期コース】_LWB_MUSL_TK
   upsell_upsell_name: null
