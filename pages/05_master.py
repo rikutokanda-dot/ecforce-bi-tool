@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 import pandas as pd
 import streamlit as st
 
-from src.bigquery_client import fetch_filter_options, get_bigquery_client
+from src.bigquery_client import fetch_filter_options, fetch_filtered_options, get_bigquery_client
 from src.config_loader import (
     load_product_cycles,
     load_upsell_mappings,
@@ -49,58 +49,25 @@ def _fetch_all_product_names(company_key: str) -> list[str]:
     return fetch_filter_options(client, table_ref, Col.SUBSCRIPTION_PRODUCT_NAME)
 
 
-# =====================================================================
-# ヘルパー: YAMLの行リスト → 編集用グループ形式に変換
-# =====================================================================
-def _mappings_to_groups(mappings: list[dict]) -> list[dict]:
-    """YAMLの1行1マッピング形式を、from_names単位のグループにまとめる.
-
-    YAML形式: [{"from_names": ["A"], "upsell_name": "B", "upsell_upsell_name": "C"}, ...]
-    グループ: [{"from_names": ["A"], "upsell_names": ["B"], "upsell_upsell_names": ["C"]}, ...]
-
-    同じfrom_namesの行は1グループにまとめ、upsell_name/upsell_upsell_nameをリストに集約。
-    """
-    groups: dict[tuple, dict] = {}
-    for m in mappings:
-        fns = tuple(m.get("from_names", []))
-        if not fns:
-            continue
-        if fns not in groups:
-            groups[fns] = {"from_names": list(fns), "upsell_names": [], "upsell_upsell_names": []}
-        un = m.get("upsell_name", "")
-        uun = m.get("upsell_upsell_name") or ""
-        if un and un not in groups[fns]["upsell_names"]:
-            groups[fns]["upsell_names"].append(un)
-        if uun and uun not in groups[fns]["upsell_upsell_names"]:
-            groups[fns]["upsell_upsell_names"].append(uun)
-    return list(groups.values())
+@st.cache_data(ttl=86400, show_spinner=False)
+def _fetch_product_categories(company_key: str) -> list[str]:
+    """商品カテゴリ一覧を取得."""
+    client = get_bigquery_client()
+    table_ref = get_table_ref(company_key)
+    return fetch_filter_options(client, table_ref, Col.PRODUCT_CATEGORY)
 
 
-def _groups_to_mappings(groups: list[dict]) -> list[dict]:
-    """グループ形式をYAMLの1行1マッピング形式に展開.
-
-    upsell_namesの各要素ごとに1行。
-    upsell_upsell_namesは先頭のupsell_nameに紐づける（複数ある場合は順番に割当）。
-    """
-    result = []
-    for g in groups:
-        fns = g.get("from_names", [])
-        if not fns:
-            continue
-        upsell_names = g.get("upsell_names", [])
-        upsell_upsell_names = g.get("upsell_upsell_names", [])
-
-        if not upsell_names:
-            continue
-
-        for i, un in enumerate(upsell_names):
-            uun = upsell_upsell_names[i] if i < len(upsell_upsell_names) else None
-            result.append({
-                "from_names": list(fns),
-                "upsell_name": un,
-                "upsell_upsell_name": uun or None,
-            })
-    return result
+@st.cache_data(ttl=86400, show_spinner=False)
+def _fetch_product_names_by_category(
+    company_key: str, categories: tuple[str, ...],
+) -> list[str]:
+    """商品カテゴリで絞り込んだ定期商品名一覧を取得."""
+    client = get_bigquery_client()
+    table_ref = get_table_ref(company_key)
+    return fetch_filtered_options(
+        client, table_ref, Col.SUBSCRIPTION_PRODUCT_NAME,
+        {Col.PRODUCT_CATEGORY: list(categories)},
+    )
 
 
 # =====================================================================
@@ -171,98 +138,128 @@ with tab_cycles:
 # =====================================================================
 with tab_upsell:
     st.subheader("アップセルマッピング")
-    st.caption("アップセル率 = アップセル商品 / (アップセル商品 + 通常商品)")
+    st.caption("アップセル率 = 分子(人数) / 分母(人数) × 100")
 
     # --- 商品名一覧を取得 ---
     company_key = get_selected_company_key()
     if not company_key:
         st.warning("サイドバーから会社を選択してください。")
     else:
-        all_product_names: list[str] = _fetch_all_product_names(company_key)
+        # --- 商品カテゴリフィルタ ---
+        categories = _fetch_product_categories(company_key)
+        selected_categories = st.multiselect(
+            "商品カテゴリで絞り込み",
+            categories,
+            key="master_upsell_category_filter",
+            help="選択すると、分子・分母・期間デフォルトの候補がこのカテゴリの商品のみに絞り込まれます",
+        )
+
+        if selected_categories:
+            all_product_names: list[str] = _fetch_product_names_by_category(
+                company_key, tuple(selected_categories),
+            )
+        else:
+            all_product_names: list[str] = _fetch_all_product_names(company_key)
+
         mappings = load_upsell_mappings()
 
         # ========== カード形式の編集UI ==========
 
-        # session_state でグループ化したマッピングを管理
-        if "upsell_groups_edit" not in st.session_state:
-            st.session_state["upsell_groups_edit"] = _mappings_to_groups(mappings)
+        # session_state でマッピングリストを管理
+        if "upsell_mappings_edit" not in st.session_state:
+            st.session_state["upsell_mappings_edit"] = mappings if mappings else []
 
-        edit_groups: list[dict] = st.session_state["upsell_groups_edit"]
+        edit_mappings: list[dict] = st.session_state["upsell_mappings_edit"]
 
-        for idx, group in enumerate(edit_groups):
+        for idx, m in enumerate(edit_mappings):
             with st.container(border=True):
                 header_col, del_col = st.columns([10, 1])
-                with header_col:
-                    st.markdown(f"**マッピング {idx + 1}**")
                 with del_col:
                     if st.button("🗑️", key=f"del_{idx}", help="この行を削除"):
-                        edit_groups.pop(idx)
-                        st.session_state["upsell_groups_edit"] = edit_groups
+                        edit_mappings.pop(idx)
+                        st.session_state["upsell_mappings_edit"] = edit_mappings
                         st.rerun()
 
+                # --- マッピング名 (text_input) ---
+                with header_col:
+                    current_label = m.get("label", f"マッピング {idx + 1}")
+                    sel_label = st.text_input(
+                        "マッピング名",
+                        value=current_label,
+                        key=f"label_{idx}",
+                    )
+                    m["label"] = sel_label
+
                 # 類似度ソートの基準
-                ref_name = (group.get("from_names") or [""])[0]
+                ref_name = (m.get("numerator_names") or [""])[0]
                 sorted_candidates = _sort_by_similarity(all_product_names, ref_name)
 
-                # --- アップセル商品 (multiselect) ---
-                current_upsells = group.get("upsell_names", [])
-                upsell_options = list(sorted_candidates)
-                for cv in current_upsells:
-                    if cv and cv not in upsell_options:
-                        upsell_options.insert(0, cv)
+                # --- 分子 (multiselect) ---
+                current_numerators = m.get("numerator_names", [])
+                num_options = list(sorted_candidates)
+                for cv in current_numerators:
+                    if cv and cv not in num_options:
+                        num_options.insert(0, cv)
 
-                sel_upsells = st.multiselect(
-                    "アップセル商品（複数選択可）",
-                    upsell_options,
-                    default=current_upsells,
-                    key=f"upsell_{idx}",
+                sel_numerators = st.multiselect(
+                    "分子（複数選択可）",
+                    num_options,
+                    default=current_numerators,
+                    key=f"numerator_{idx}",
                 )
-                group["upsell_names"] = sel_upsells
+                m["numerator_names"] = sel_numerators
 
-                # --- 通常商品 (multiselect) ---
-                current_froms = group.get("from_names", [])
-                from_options = list(sorted_candidates)
-                for cv in current_froms:
-                    if cv and cv not in from_options:
-                        from_options.insert(0, cv)
+                # --- 分母 (multiselect) ---
+                current_denominators = m.get("denominator_names", [])
+                den_options = list(sorted_candidates)
+                for cv in current_denominators:
+                    if cv and cv not in den_options:
+                        den_options.insert(0, cv)
 
-                sel_froms = st.multiselect(
-                    "通常商品（複数選択可）",
-                    from_options,
-                    default=current_froms,
-                    key=f"from_{idx}",
+                sel_denominators = st.multiselect(
+                    "分母（複数選択可）",
+                    den_options,
+                    default=current_denominators,
+                    key=f"denominator_{idx}",
                 )
-                group["from_names"] = sel_froms
+                m["denominator_names"] = sel_denominators
 
-                # --- アップセルアップセル先 (multiselect) ---
-                current_upups = group.get("upsell_upsell_names", [])
-                upup_ref = (group.get("upsell_names") or [""])[0] or ref_name
-                sorted_upup = _sort_by_similarity(all_product_names, upup_ref)
-                upup_options = list(sorted_upup)
-                for cv in current_upups:
-                    if cv and cv not in upup_options:
-                        upup_options.insert(0, cv)
+                # --- 期間デフォルト (multiselect) ---
+                current_period_ref = m.get("period_ref_names", [])
+                period_ref_name = (current_period_ref or [""])[0] or ref_name
+                sorted_period = _sort_by_similarity(all_product_names, period_ref_name)
+                period_options = list(sorted_period)
+                for cv in current_period_ref:
+                    if cv and cv not in period_options:
+                        period_options.insert(0, cv)
 
-                sel_upups = st.multiselect(
-                    "アップセルアップセル先（任意）",
-                    upup_options,
-                    default=current_upups,
-                    key=f"upup_{idx}",
+                sel_period_ref = st.multiselect(
+                    "期間デフォルト（この商品の定期開始日の範囲をデフォルト期間にする）",
+                    period_options,
+                    default=current_period_ref,
+                    key=f"period_ref_{idx}",
                 )
-                group["upsell_upsell_names"] = sel_upups
+                m["period_ref_names"] = sel_period_ref
 
         # --- 行追加ボタン ---
         if st.button("＋ マッピングを追加", key="add_mapping"):
-            edit_groups.append({"from_names": [], "upsell_names": [], "upsell_upsell_names": []})
-            st.session_state["upsell_groups_edit"] = edit_groups
+            edit_mappings.append({
+                "label": "",
+                "numerator_names": [],
+                "denominator_names": [],
+                "period_ref_names": [],
+            })
+            st.session_state["upsell_mappings_edit"] = edit_mappings
             st.rerun()
 
         # --- 保存ボタン ---
         st.markdown("")
         if st.button("保存", type="primary", key="save_upsell"):
-            valid_groups = [g for g in edit_groups if g.get("from_names") and g.get("upsell_names")]
-            flat_mappings = _groups_to_mappings(valid_groups)
-            save_upsell_mappings(flat_mappings)
-            st.session_state["upsell_groups_edit"] = valid_groups
-            st.success(f"{len(flat_mappings)} 件のマッピングを保存しました。")
+            valid_mappings = [
+                m for m in edit_mappings
+                if m.get("numerator_names") and m.get("denominator_names")
+            ]
+            save_upsell_mappings(valid_mappings)
+            st.session_state["upsell_mappings_edit"] = valid_mappings
+            st.success(f"{len(valid_mappings)} 件のマッピングを保存しました。")
             st.rerun()

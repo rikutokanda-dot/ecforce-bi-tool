@@ -76,18 +76,32 @@ def save_product_cycles(data: dict) -> None:
 def load_upsell_mappings() -> list[dict]:
     """アップセルマッピングを読み込む.
 
-    後方互換: from_name (文字列) → from_names (リスト) に自動変換。
+    新形式: label / numerator_names / denominator_names / period_ref_names
+    後方互換: 旧形式(from_names / upsell_name / upsell_upsell_name)も自動変換。
     """
     if not UPSELL_MAPPING_FILE.exists():
         return []
     with open(UPSELL_MAPPING_FILE, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     raw = data.get("mappings", [])
-    # 後方互換: from_name → from_names
+    result = []
     for m in raw:
-        if "from_names" not in m and "from_name" in m:
-            m["from_names"] = [m.pop("from_name")]
-    return raw
+        # 新形式ならそのまま
+        if "numerator_names" in m:
+            result.append(m)
+            continue
+        # 旧形式 → 新形式に変換
+        fns = m.get("from_names") or ([m["from_name"]] if "from_name" in m else [])
+        un = m.get("upsell_name", "")
+        if not fns or not un:
+            continue
+        result.append({
+            "label": un,
+            "numerator_names": [un],
+            "denominator_names": list(fns),
+            "period_ref_names": [un],
+        })
+    return result
 
 
 def save_upsell_mappings(mappings: list[dict]) -> None:
@@ -103,16 +117,16 @@ def save_upsell_mappings(mappings: list[dict]) -> None:
 
 
 def get_upsell_target(product_name: str) -> dict | None:
-    """商品名のアップセル先を取得. なければNone."""
+    """商品名に関連するマッピングを取得. なければNone."""
     for m in load_upsell_mappings():
-        if product_name in m.get("from_names", []):
+        if product_name in m.get("denominator_names", []):
             return m
     return None
 
 
 def get_upsell_targets(product_name: str) -> list[dict]:
-    """商品名のアップセル先を全て取得. なければ空リスト.
-
-    1つの通常商品に複数のアップセル先がある場合に対応。
-    """
-    return [m for m in load_upsell_mappings() if product_name in m.get("from_names", [])]
+    """商品名に関連するマッピングを全て取得. なければ空リスト."""
+    return [
+        m for m in load_upsell_mappings()
+        if product_name in m.get("denominator_names", [])
+    ]

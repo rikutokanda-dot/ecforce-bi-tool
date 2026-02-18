@@ -259,27 +259,24 @@ def build_upsell_sql(
 
 def build_upsell_rate_sql(
     company_key: str,
-    normal_product_names: str | list[str],
-    upsell_product_name: str,
+    numerator_names: list[str],
+    denominator_names: list[str],
+    period_ref_names: list[str],
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> str:
     """アップセル率計算SQL.
 
-    アップセル商品が実際に購入されている期間を自動検出し、
-    その期間中の通常商品とアップセル商品の1回目購入数から
-    アップセル切替率を算出する。
+    period_ref_names の定期開始日範囲をデフォルト期間として自動検出し、
+    その期間中の分子(numerator)と分母(denominator)の1回目購入数から率を算出。
 
-    normal_product_names は単一文字列またはリストを受け付ける。
-
-    アップセル率 = upsell_1回目購入数 / (normal_1回目購入数 + upsell_1回目購入数)
+    アップセル率 = 分子人数 / 分母人数 × 100
     """
     table = get_table_ref(company_key)
 
-    # normal_product_names をリスト化
-    if isinstance(normal_product_names, str):
-        normal_product_names = [normal_product_names]
-    normal_in = ", ".join(f"'{n}'" for n in normal_product_names)
+    numerator_in = ", ".join(f"'{n}'" for n in numerator_names)
+    denominator_in = ", ".join(f"'{n}'" for n in denominator_names)
+    period_ref_in = ", ".join(f"'{n}'" for n in period_ref_names)
 
     # ユーザー日付フィルタとの交差期間計算
     period_start_expr = "p.period_start"
@@ -291,12 +288,12 @@ def build_upsell_rate_sql(
 
     return f"""
     WITH
-    upsell_period AS (
+    ref_period AS (
       SELECT
         MIN(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_start,
         MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_end
       FROM {table}
-      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{upsell_product_name}'
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({period_ref_in})
         AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
@@ -305,25 +302,25 @@ def build_upsell_rate_sql(
       SELECT
         {period_start_expr} AS eff_start,
         {period_end_expr} AS eff_end
-      FROM upsell_period p
+      FROM ref_period p
       WHERE p.period_start IS NOT NULL
     ),
-    normal_first AS (
-      SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS normal_count
+    numerator_first AS (
+      SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS numerator_count
       FROM {table}
       CROSS JOIN effective_period ep
-      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({normal_in})
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({numerator_in})
         AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
         AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
         AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
     ),
-    upsell_first AS (
-      SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS upsell_count
+    denominator_first AS (
+      SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS denominator_count
       FROM {table}
       CROSS JOIN effective_period ep
-      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{upsell_product_name}'
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({denominator_in})
         AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
@@ -331,35 +328,35 @@ def build_upsell_rate_sql(
         AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
     )
     SELECT
-      n.normal_count,
-      u.upsell_count,
+      nu.numerator_count,
+      de.denominator_count,
       ep.eff_start AS period_start,
       ep.eff_end AS period_end,
-      SAFE_DIVIDE(u.upsell_count, n.normal_count + u.upsell_count) * 100 AS upsell_rate
-    FROM normal_first n
-    CROSS JOIN upsell_first u
+      SAFE_DIVIDE(nu.numerator_count, de.denominator_count) * 100 AS upsell_rate
+    FROM numerator_first nu
+    CROSS JOIN denominator_first de
     CROSS JOIN effective_period ep
     """
 
 
 def build_upsell_rate_monthly_sql(
     company_key: str,
-    normal_product_names: str | list[str],
-    upsell_product_name: str,
+    numerator_names: list[str],
+    denominator_names: list[str],
+    period_ref_names: list[str],
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> str:
     """月別アップセル率計算SQL.
 
-    アップセル商品が購入されている期間内で、月ごとの
-    通常商品とアップセル商品の1回目購入数からアップセル率を算出。
-    normal_product_names は単一文字列またはリストを受け付ける。
+    period_ref_names の定期開始日範囲をデフォルト期間とし、
+    月ごとの分子と分母の1回目購入数から率を算出。
     """
     table = get_table_ref(company_key)
 
-    if isinstance(normal_product_names, str):
-        normal_product_names = [normal_product_names]
-    normal_in = ", ".join(f"'{n}'" for n in normal_product_names)
+    numerator_in = ", ".join(f"'{n}'" for n in numerator_names)
+    denominator_in = ", ".join(f"'{n}'" for n in denominator_names)
+    period_ref_in = ", ".join(f"'{n}'" for n in period_ref_names)
 
     period_start_expr = "p.period_start"
     period_end_expr = "p.period_end"
@@ -370,12 +367,12 @@ def build_upsell_rate_monthly_sql(
 
     return f"""
     WITH
-    upsell_period AS (
+    ref_period AS (
       SELECT
         MIN(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_start,
         MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_end
       FROM {table}
-      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{upsell_product_name}'
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({period_ref_in})
         AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
@@ -384,16 +381,16 @@ def build_upsell_rate_monthly_sql(
       SELECT
         {period_start_expr} AS eff_start,
         {period_end_expr} AS eff_end
-      FROM upsell_period p
+      FROM ref_period p
       WHERE p.period_start IS NOT NULL
     ),
-    monthly_normal AS (
+    monthly_numerator AS (
       SELECT
         FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
-        COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS normal_count
+        COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS numerator_count
       FROM {table}
       CROSS JOIN effective_period ep
-      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({normal_in})
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({numerator_in})
         AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
@@ -401,13 +398,13 @@ def build_upsell_rate_monthly_sql(
         AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
       GROUP BY cohort_month
     ),
-    monthly_upsell AS (
+    monthly_denominator AS (
       SELECT
         FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
-        COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS upsell_count
+        COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS denominator_count
       FROM {table}
       CROSS JOIN effective_period ep
-      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{upsell_product_name}'
+      WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({denominator_in})
         AND `{Col.ORDER_SUBSCRIPTION_COUNT}` = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
@@ -416,14 +413,14 @@ def build_upsell_rate_monthly_sql(
       GROUP BY cohort_month
     )
     SELECT
-      COALESCE(n.cohort_month, u.cohort_month) AS cohort_month,
-      IFNULL(n.normal_count, 0) AS normal_count,
-      IFNULL(u.upsell_count, 0) AS upsell_count,
+      COALESCE(nu.cohort_month, de.cohort_month) AS cohort_month,
+      IFNULL(nu.numerator_count, 0) AS numerator_count,
+      IFNULL(de.denominator_count, 0) AS denominator_count,
       SAFE_DIVIDE(
-        IFNULL(u.upsell_count, 0),
-        IFNULL(n.normal_count, 0) + IFNULL(u.upsell_count, 0)
+        IFNULL(nu.numerator_count, 0),
+        IFNULL(de.denominator_count, 0)
       ) * 100 AS upsell_rate
-    FROM monthly_normal n
-    FULL OUTER JOIN monthly_upsell u ON n.cohort_month = u.cohort_month
+    FROM monthly_denominator de
+    FULL OUTER JOIN monthly_numerator nu ON de.cohort_month = nu.cohort_month
     ORDER BY cohort_month
     """

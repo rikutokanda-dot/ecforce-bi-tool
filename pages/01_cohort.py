@@ -14,7 +14,7 @@ from src.components.cohort_heatmap import render_cohort_heatmap, render_retentio
 from src.components.download_button import render_download_buttons
 from src.components.filters import render_cohort_filters
 from src.components.metrics_row import render_metrics
-from src.config_loader import get_product_cycle, get_upsell_target, get_upsell_targets, load_upsell_mappings
+from src.config_loader import get_product_cycle, load_upsell_mappings
 from src.constants import Col
 from src.queries.common import get_table_ref
 from src.queries.cohort import (
@@ -94,47 +94,22 @@ def _styled_table(df: pd.DataFrame, value_col: str, color: str = "blue") -> str:
 # =====================================================================
 # ヘルパー: アップセル率表示
 # =====================================================================
-def _upsell_label_html(title: str, before_name: str, after_name: str) -> str:
-    """アップセル率の2段ラベルHTMLを生成."""
-    return (
-        f"**{title}**\n\n"
-        f"US前：{before_name}  \n"
-        f"US後：{after_name}"
-    )
-
-
 def _render_upsell_pair(
     client,
     company_key: str,
-    normal_names: str | list[str],
-    upsell_name: str,
-    label_title: str,
+    numerator_names: list[str],
+    denominator_names: list[str],
+    period_ref_names: list[str],
     date_from_str: str | None,
     date_to_str: str | None,
     *,
-    skip_if_no_normal: bool = False,
     pair_key: str = "",
 ):
-    """1組のアップセル率を表示（初回判定のみ）。skip時はUI自体を出さない。"""
-    # skip_if_no_normal の場合、まずデータ有無を確認してからフラグメント描画
-    if skip_if_no_normal:
-        sql_check = build_upsell_rate_sql(
-            company_key, normal_names, upsell_name,
-            date_from_str, date_to_str,
-        )
-        try:
-            df_check = execute_query(client, sql_check)
-            if df_check.empty or df_check["upsell_rate"].iloc[0] is None:
-                return
-            if int(df_check.iloc[0]["normal_count"]) == 0:
-                return
-        except Exception:
-            return
-
-    # フラグメントとして描画（日付変更時にここだけ再実行）
+    """1組のアップセル率を表示（初回判定のみ）。"""
     _upsell_pair_fragment(
-        client, company_key, normal_names, upsell_name,
-        label_title, date_from_str, date_to_str,
+        client, company_key,
+        numerator_names, denominator_names, period_ref_names,
+        date_from_str, date_to_str,
         pair_key=pair_key,
     )
 
@@ -143,23 +118,19 @@ def _render_upsell_pair(
 def _upsell_pair_fragment(
     client,
     company_key: str,
-    normal_names: str | list[str],
-    upsell_name: str,
-    label_title: str,
+    numerator_names: list[str],
+    denominator_names: list[str],
+    period_ref_names: list[str],
     date_from_str: str | None,
     date_to_str: str | None,
     *,
     pair_key: str = "",
 ):
     """フラグメント化されたアップセル率表示。日付変更時にこの部分だけ再実行。"""
-    # normal_names をリスト化して表示用文字列を作る
-    if isinstance(normal_names, str):
-        _normal_list = [normal_names]
-    else:
-        _normal_list = list(normal_names)
-    _normal_display = ", ".join(_normal_list)
+    _numerator_display = ", ".join(numerator_names)
+    _denominator_display = ", ".join(denominator_names)
 
-    _key_base = pair_key or f"{'_'.join(_normal_list)}_{upsell_name}"
+    _key_base = pair_key or f"{'_'.join(numerator_names)}_{'_'.join(denominator_names)}"
     _k_from = f"us_period_from_{_key_base}"
     _k_to = f"us_period_to_{_key_base}"
 
@@ -175,31 +146,33 @@ def _upsell_pair_fragment(
         query_to = date_to_str
 
     sql = build_upsell_rate_sql(
-        company_key, _normal_list, upsell_name,
+        company_key, numerator_names, denominator_names, period_ref_names,
         query_from, query_to,
     )
     try:
         df = execute_query(client, sql)
         if df.empty or df["upsell_rate"].iloc[0] is None:
-            st.markdown(f"**{label_title}**　データなし")
-            st.markdown(f"<small>US前：{_normal_display}<br>US後：{upsell_name}</small>",
-                        unsafe_allow_html=True)
+            st.markdown("**アップセル率**　データなし")
+            st.markdown(
+                f"<small>分子：{_numerator_display}<br>分母：{_denominator_display}</small>",
+                unsafe_allow_html=True,
+            )
             st.divider()
             return
         row = df.iloc[0]
         rate = round(float(row["upsell_rate"]), 1)
-        normal_count = int(row["normal_count"])
-        upsell_count = int(row["upsell_count"])
+        numerator_count = int(row["numerator_count"])
+        denominator_count = int(row["denominator_count"])
         period_start = str(row["period_start"])[:10]
         period_end = str(row["period_end"])[:10]
 
-        # 1行目: アップセル率 ~~%　通常:-人/アップセル:-人
+        # 1行目: アップセル率 ~~%　分母:-人/分子:-人
         st.markdown(
-            f"**{label_title}　{rate}%**　　通常: {normal_count:,}人 / アップセル: {upsell_count:,}人"
+            f"**アップセル率　{rate}%**　　分母: {denominator_count:,}人 / 分子: {numerator_count:,}人"
         )
-        # 2行目: US前/US後
+        # 2行目: 分子/分母
         st.markdown(
-            f"<small>US前：{_normal_display}<br>US後：{upsell_name}</small>",
+            f"<small>分子：{_numerator_display}<br>分母：{_denominator_display}</small>",
             unsafe_allow_html=True,
         )
 
@@ -214,12 +187,11 @@ def _upsell_pair_fragment(
         with dcols[1]:
             st.date_input("対象終了日", key=_k_to)
 
-        # 仕切り線
         st.divider()
     except Exception as e:
-        st.markdown(f"**{label_title}**　エラー")
+        st.markdown("**アップセル率**　エラー")
         st.markdown(
-            f"<small>US前：{_normal_display}<br>US後：{upsell_name}</small>",
+            f"<small>分子：{_numerator_display}<br>分母：{_denominator_display}</small>",
             unsafe_allow_html=True,
         )
         st.caption(f"({e})")
@@ -229,40 +201,34 @@ def _upsell_pair_fragment(
 def _render_upsell_monthly(
     client,
     company_key: str,
-    normal_names: str | list[str],
-    upsell_name: str,
-    label_title: str,
+    numerator_names: list[str],
+    denominator_names: list[str],
+    period_ref_names: list[str],
     date_from_str: str | None,
     date_to_str: str | None,
-    *,
-    skip_if_no_normal: bool = False,
 ):
     """月別アップセル率テーブル+グラフを表示."""
-    if isinstance(normal_names, str):
-        _normal_list = [normal_names]
-    else:
-        _normal_list = list(normal_names)
-    _normal_display = ", ".join(_normal_list)
+    _numerator_display = ", ".join(numerator_names)
+    _denominator_display = ", ".join(denominator_names)
 
     sql = build_upsell_rate_monthly_sql(
-        company_key, _normal_list, upsell_name,
+        company_key, numerator_names, denominator_names, period_ref_names,
         date_from_str, date_to_str,
     )
-    label_md = _upsell_label_html(label_title, _normal_display, upsell_name)
+    label_md = (
+        f"**アップセル率**\n\n"
+        f"分子：{_numerator_display}  \n"
+        f"分母：{_denominator_display}"
+    )
     try:
         df = execute_query(client, sql)
         if df.empty:
-            if not skip_if_no_normal:
-                st.markdown(label_md)
-                st.info("データなし")
+            st.markdown(label_md)
+            st.info("データなし")
             return
 
-        # 通常商品が全月で0人ならスキップ
-        if skip_if_no_normal and df["normal_count"].sum() == 0:
-            return
-
-        display_df = df[["cohort_month", "normal_count", "upsell_count", "upsell_rate"]].copy()
-        display_df.columns = ["月", "通常商品(人)", "アップセル商品(人)", "アップセル率(%)"]
+        display_df = df[["cohort_month", "denominator_count", "numerator_count", "upsell_rate"]].copy()
+        display_df.columns = ["月", "分母(人)", "分子(人)", "アップセル率(%)"]
         display_df["アップセル率(%)"] = display_df["アップセル率(%)"].round(1)
 
         st.markdown(label_md)
@@ -282,7 +248,7 @@ def _render_upsell_monthly(
                 marker=dict(size=6),
             ))
             fig.update_layout(
-                title=f"{label_title} 推移",
+                title="アップセル率 推移",
                 xaxis_title="月",
                 yaxis_title="アップセル率 (%)",
                 height=350,
@@ -751,14 +717,12 @@ with main_tab_upsell:
     _upsell_filter_pnames = filters.get("product_names")
     _upsell_filter_cats = filters.get("product_categories")
     if _upsell_filter_pnames:
-        # 商品名が選択されていれば from_names に含まれるか
         _pname_set = set(_upsell_filter_pnames)
         all_mappings = [
             m for m in _all_mappings_raw
-            if _pname_set & set(m.get("from_names", []))
+            if _pname_set & (set(m.get("numerator_names", [])) | set(m.get("denominator_names", [])))
         ]
     elif _upsell_filter_cats:
-        # 商品カテゴリが選択されていれば、そのカテゴリに属する商品名を取得してフィルタ
         _table_ref = get_table_ref(company_key)
         _cat_product_names = fetch_filtered_options(
             client, _table_ref, Col.SUBSCRIPTION_PRODUCT_NAME,
@@ -767,7 +731,7 @@ with main_tab_upsell:
         _cat_pname_set = set(_cat_product_names)
         all_mappings = [
             m for m in _all_mappings_raw
-            if _cat_pname_set & set(m.get("from_names", []))
+            if _cat_pname_set & (set(m.get("numerator_names", [])) | set(m.get("denominator_names", [])))
         ]
     else:
         all_mappings = list(_all_mappings_raw)
@@ -782,76 +746,31 @@ with main_tab_upsell:
         if not st.session_state.get("upsell_tab_shown"):
             st.info("「表示する」を押すとアップセル率を計算します。")
         else:
-            # upsell_name 単位でグループ化（1アコーディオン = 1 US後商品）
-            _upsell_items: list[dict] = []
-            _seen_upsell: dict[str, int] = {}
-            for m in all_mappings:
-                fns = m.get("from_names", [])
-                un = m.get("upsell_name", "")
-                uun = m.get("upsell_upsell_name")
-                if not fns or not un:
-                    continue
-                if un not in _seen_upsell:
-                    _seen_upsell[un] = len(_upsell_items)
-                    _upsell_items.append({
-                        "from_names": list(fns),
-                        "upsell_name": un,
-                        "upsell_upsell_names": [uun] if uun else [],
-                    })
-                else:
-                    item = _upsell_items[_seen_upsell[un]]
-                    for fn in fns:
-                        if fn not in item["from_names"]:
-                            item["from_names"].append(fn)
-                    if uun and uun not in item["upsell_upsell_names"]:
-                        item["upsell_upsell_names"].append(uun)
-
             upsell_sub_agg, upsell_sub_monthly = st.tabs(["通算", "月別"])
 
             # ---------- 通算アップセル率 ----------
             with upsell_sub_agg:
-                for _gi, item in enumerate(_upsell_items):
-                    un = item["upsell_name"]
-                    with st.expander(f"📦 {un}", expanded=True):
-                        # アップセル率: 各 from_names → upsell_name
+                for _gi, m in enumerate(all_mappings):
+                    _label = m.get("label", f"マッピング {_gi + 1}")
+                    with st.expander(f"📦 {_label}", expanded=True):
                         _render_upsell_pair(
                             client, company_key,
-                            item["from_names"], un,
-                            "アップセル率",
+                            m.get("numerator_names", []),
+                            m.get("denominator_names", []),
+                            m.get("period_ref_names", []),
                             date_from_str, date_to_str,
                             pair_key=f"agg_{_gi}",
                         )
-                        # アップアップセル率: upsell_name → 各 upsell_upsell_name
-                        if item["upsell_upsell_names"]:
-                            st.divider()
-                            for _uui, uun in enumerate(item["upsell_upsell_names"]):
-                                _render_upsell_pair(
-                                    client, company_key,
-                                    un, uun,
-                                    "ｱｯﾌﾟｱｯﾌﾟｾﾙ率",
-                                    date_from_str, date_to_str,
-                                    skip_if_no_normal=True,
-                                    pair_key=f"agg_uu_{_gi}_{_uui}",
-                                )
 
             # ---------- 月別アップセル率 ----------
             with upsell_sub_monthly:
-                for _gi, item in enumerate(_upsell_items):
-                    un = item["upsell_name"]
-                    with st.expander(f"📦 {un}", expanded=True):
+                for _gi, m in enumerate(all_mappings):
+                    _label = m.get("label", f"マッピング {_gi + 1}")
+                    with st.expander(f"📦 {_label}", expanded=True):
                         _render_upsell_monthly(
                             client, company_key,
-                            item["from_names"], un,
-                            "アップセル率",
+                            m.get("numerator_names", []),
+                            m.get("denominator_names", []),
+                            m.get("period_ref_names", []),
                             date_from_str, date_to_str,
                         )
-                        if item["upsell_upsell_names"]:
-                            st.divider()
-                            for uun in item["upsell_upsell_names"]:
-                                _render_upsell_monthly(
-                                    client, company_key,
-                                    un, uun,
-                                    "ｱｯﾌﾟｱｯﾌﾟｾﾙ率",
-                                    date_from_str, date_to_str,
-                                    skip_if_no_normal=True,
-                                )
