@@ -13,6 +13,16 @@ from __future__ import annotations
 from src.constants import Col, LogicalSeq, MAX_RETENTION_MONTHS, Status
 from src.queries.common import build_filter_clause, get_table_ref
 
+# ---------------------------------------------------------------------------
+# STRING型カラムの安全なCAST式 (テーブル再作成で全カラムSTRINGになった対応)
+# ---------------------------------------------------------------------------
+_TS = f"SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)"
+_TS_T2 = f"SAFE_CAST(t2.`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)"
+_SUB_COUNT = f"SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)"
+_SUB_COUNT_T2 = f"SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)"
+_LOGIC_SEQ = f"SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64)"
+_PAY_AMOUNT_T2 = f"SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64)"
+
 
 def build_cohort_sql(
     company_key: str,
@@ -33,7 +43,7 @@ def build_cohort_sql(
     )
 
     retained_columns = ",\n      ".join(
-        f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i}"
+        f"COUNT(DISTINCT IF({_SUB_COUNT_T2} = {i}, t1.customer_id, NULL)) AS retained_{i}"
         for i in range(1, MAX_RETENTION_MONTHS + 1)
     )
 
@@ -43,11 +53,11 @@ def build_cohort_sql(
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
-        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month,
+        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
+        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
-      WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+      WHERE {_SUB_COUNT} = 1
       {filters}
       GROUP BY customer_id, first_product_name, cohort_month
       HAVING has_entry_data = 1 AND has_logic_2 = 0
@@ -96,13 +106,13 @@ def build_drilldown_sql(
 
     if is_product_drilldown:
         retained_columns = ",\n      ".join(
-            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
-            f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t2.`{Col.PAYMENT_AMOUNT}`, 0)) AS revenue_{i}"
+            f"COUNT(DISTINCT IF({_SUB_COUNT_T2} = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
+            f"      SUM(IF({_SUB_COUNT_T2} = {i}, {_PAY_AMOUNT_T2}, 0)) AS revenue_{i}"
             for i in range(1, MAX_RETENTION_MONTHS + 1)
         )
     else:
         retained_columns = ",\n      ".join(
-            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i}"
+            f"COUNT(DISTINCT IF({_SUB_COUNT_T2} = {i}, t1.customer_id, NULL)) AS retained_{i}"
             for i in range(1, MAX_RETENTION_MONTHS + 1)
         )
 
@@ -113,11 +123,11 @@ def build_drilldown_sql(
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
         `{drilldown_column}` AS dimension_col,
-        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
-        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month,
+        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
+        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
-      WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+      WHERE {_SUB_COUNT} = 1
       {filters}
       AND `{drilldown_column}` IS NOT NULL
       AND `{drilldown_column}` != ''
@@ -165,8 +175,8 @@ def build_aggregate_cohort_sql(
     )
 
     retained_cols = ",\n      ".join(
-        f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
-        f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t2.`{Col.PAYMENT_AMOUNT}`, 0)) AS revenue_{i}"
+        f"COUNT(DISTINCT IF({_SUB_COUNT_T2} = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
+        f"      SUM(IF({_SUB_COUNT_T2} = {i}, {_PAY_AMOUNT_T2}, 0)) AS revenue_{i}"
         for i in range(1, MAX_RETENTION_MONTHS + 1)
     )
 
@@ -176,10 +186,10 @@ def build_aggregate_cohort_sql(
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
+        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
-      WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+      WHERE {_SUB_COUNT} = 1
       {filters}
       GROUP BY customer_id, first_product_name
       HAVING has_entry_data = 1 AND has_logic_2 = 0
@@ -207,7 +217,7 @@ def build_max_date_sql(company_key: str) -> str:
     """
     table = get_table_ref(company_key)
     return f"""
-    SELECT MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS max_date
+    SELECT MAX({_TS}) AS max_date
     FROM {table}
     WHERE `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
       AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
@@ -228,9 +238,9 @@ def build_upsell_sql(
     table = get_table_ref(company_key)
     date_filter = ""
     if date_from:
-        date_filter += f"\n        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= '{date_from}'"
+        date_filter += f"\n        AND {_TS} >= '{date_from}'"
     if date_to:
-        date_filter += f"\n        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= '{date_to}'"
+        date_filter += f"\n        AND {_TS} <= '{date_to}'"
 
     return f"""
     WITH
@@ -282,19 +292,19 @@ def build_upsell_rate_sql(
     period_start_expr = "p.period_start"
     period_end_expr = "p.period_end"
     if date_from:
-        period_start_expr = f"GREATEST(p.period_start, '{date_from}')"
+        period_start_expr = f"GREATEST(p.period_start, TIMESTAMP('{date_from}'))"
     if date_to:
-        period_end_expr = f"LEAST(p.period_end, '{date_to}')"
+        period_end_expr = f"LEAST(p.period_end, TIMESTAMP('{date_to}'))"
 
     return f"""
     WITH
     ref_period AS (
       SELECT
-        MIN(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_start,
-        MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_end
+        MIN({_TS}) AS period_start,
+        MAX({_TS}) AS period_end
       FROM {table}
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({period_ref_in})
-        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+        AND {_SUB_COUNT} = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
     ),
@@ -310,22 +320,22 @@ def build_upsell_rate_sql(
       FROM {table}
       CROSS JOIN effective_period ep
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({numerator_in})
-        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+        AND {_SUB_COUNT} = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
-        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+        AND {_TS} >= ep.eff_start
+        AND {_TS} <= ep.eff_end
     ),
     denominator_first AS (
       SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS denominator_count
       FROM {table}
       CROSS JOIN effective_period ep
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({denominator_in})
-        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+        AND {_SUB_COUNT} = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
-        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+        AND {_TS} >= ep.eff_start
+        AND {_TS} <= ep.eff_end
     )
     SELECT
       nu.numerator_count,
@@ -361,19 +371,19 @@ def build_upsell_rate_monthly_sql(
     period_start_expr = "p.period_start"
     period_end_expr = "p.period_end"
     if date_from:
-        period_start_expr = f"GREATEST(p.period_start, '{date_from}')"
+        period_start_expr = f"GREATEST(p.period_start, TIMESTAMP('{date_from}'))"
     if date_to:
-        period_end_expr = f"LEAST(p.period_end, '{date_to}')"
+        period_end_expr = f"LEAST(p.period_end, TIMESTAMP('{date_to}'))"
 
     return f"""
     WITH
     ref_period AS (
       SELECT
-        MIN(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_start,
-        MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_end
+        MIN({_TS}) AS period_start,
+        MAX({_TS}) AS period_end
       FROM {table}
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({period_ref_in})
-        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+        AND {_SUB_COUNT} = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
     ),
@@ -386,30 +396,30 @@ def build_upsell_rate_monthly_sql(
     ),
     monthly_numerator AS (
       SELECT
-        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month,
         COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS numerator_count
       FROM {table}
       CROSS JOIN effective_period ep
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({numerator_in})
-        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+        AND {_SUB_COUNT} = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
-        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+        AND {_TS} >= ep.eff_start
+        AND {_TS} <= ep.eff_end
       GROUP BY cohort_month
     ),
     monthly_denominator AS (
       SELECT
-        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month,
         COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS denominator_count
       FROM {table}
       CROSS JOIN effective_period ep
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({denominator_in})
-        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+        AND {_SUB_COUNT} = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
-        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+        AND {_TS} >= ep.eff_start
+        AND {_TS} <= ep.eff_end
       GROUP BY cohort_month
     )
     SELECT

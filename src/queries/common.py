@@ -32,11 +32,11 @@ def build_filter_clause(
 
     if date_from:
         clauses.append(
-            f"AND `{Col.SUBSCRIPTION_CREATED_AT}` >= '{date_from}'"
+            f"AND SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP) >= '{date_from}'"
         )
     if date_to:
         clauses.append(
-            f"AND `{Col.SUBSCRIPTION_CREATED_AT}` <= '{date_to}'"
+            f"AND SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP) <= '{date_to}'"
         )
 
     if product_categories:
