@@ -10,6 +10,7 @@ import yaml
 CONFIG_DIR = Path(__file__).parent.parent / "config"
 PRODUCT_CYCLES_FILE = CONFIG_DIR / "product_cycles.yaml"
 UPSELL_MAPPING_FILE = CONFIG_DIR / "upsell_mapping.yaml"
+AD_URL_MAPPING_FILE = CONFIG_DIR / "ad_url_mapping.yaml"
 
 
 # =====================================================================
@@ -130,3 +131,45 @@ def get_upsell_targets(product_name: str) -> list[dict]:
         m for m in load_upsell_mappings()
         if product_name in m.get("denominator_names", [])
     ]
+
+
+# =====================================================================
+# 広告URL IDマッピング
+# =====================================================================
+
+
+def load_ad_url_mappings() -> list[dict]:
+    """広告URL IDマッピングを読み込む.
+
+    Returns:
+        [{"ad_url_id": "xxx", "ad_url_name": "表示名"}, ...]
+    """
+    if not AD_URL_MAPPING_FILE.exists():
+        return []
+    with open(AD_URL_MAPPING_FILE, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("mappings", [])
+
+
+def save_ad_url_mappings(mappings: list[dict]) -> None:
+    """広告URL IDマッピングをYAMLに保存."""
+    with open(AD_URL_MAPPING_FILE, "w", encoding="utf-8") as f:
+        yaml.dump(
+            {"mappings": mappings},
+            f,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+        )
+
+
+def get_ad_url_display_map() -> dict[str, str]:
+    """広告URL ID → 表示名 の辞書を返す.
+
+    名前が空または未定義の場合はキーを含めない（呼び出し側でID表示にフォールバック）。
+    """
+    return {
+        m["ad_url_id"]: m["ad_url_name"]
+        for m in load_ad_url_mappings()
+        if m.get("ad_url_id") and m.get("ad_url_name")
+    }

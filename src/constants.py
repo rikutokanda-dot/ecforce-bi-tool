@@ -21,6 +21,10 @@ class Col:
     AD_GROUP = "受注_広告url_グループ名"
     PRODUCT_CATEGORY = "定期受注_受注商品_商品カテゴリ"
     PAYMENT_AMOUNT = "受注_決済金額"
+    CANCEL_REASON = "定期受注_キャンセル理由名"
+    CANCEL_DATE = "定期受注_キャンセル日時"
+    AD_URL = "受注_広告url_id"
+    SUBSCRIPTION_STATUS = "定期受注_ステータス"
 
 
 class Status:

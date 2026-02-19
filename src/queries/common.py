@@ -5,6 +5,11 @@ from __future__ import annotations
 from src.config_loader import get_company_keys
 from src.constants import Col, PROJECT_ID
 
+# ---------------------------------------------------------------------------
+# 広告URL IDの正規化式 (.0 除去で 4879.0 → 4879 に統一)
+# ---------------------------------------------------------------------------
+AD_URL_NORM = f"REGEXP_REPLACE(`{Col.AD_URL}`, r'\\.0$', '')"
+
 
 def get_table_ref(company_key: str) -> str:
     """テーブル参照文字列を生成. ホワイトリスト検証付き."""
@@ -22,6 +27,7 @@ def build_filter_clause(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
+    ad_urls: list[str] | None = None,
 ) -> str:
     """共通のWHERE句フィルタを構築.
 
@@ -54,6 +60,12 @@ def build_filter_clause(
     if product_names:
         conditions = " OR ".join(
             f"`{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{n}'" for n in product_names
+        )
+        clauses.append(f"AND ({conditions})")
+
+    if ad_urls:
+        conditions = " OR ".join(
+            f"{AD_URL_NORM} = '{u}'" for u in ad_urls
         )
         clauses.append(f"AND ({conditions})")
 

@@ -169,9 +169,11 @@ def _upsell_pair_fragment(
         period_start = str(row["period_start"])[:10]
         period_end = str(row["period_end"])[:10]
 
-        # 1行目: アップセル率 ~~%　分母:-人/分子:-人
+        # 1行目: アップセル率 ~~% を大きく表示
         st.markdown(
-            f"**アップセル率　{rate}%**　　分母: {denominator_count:,}人 / 分子: {numerator_count:,}人"
+            f'<span style="font-size:2rem;font-weight:700;">アップセル率　{rate}%</span>'
+            f'<span style="margin-left:1rem;font-size:0.9rem;color:#888;">分母: {denominator_count:,}人 / 分子: {numerator_count:,}人</span>',
+            unsafe_allow_html=True,
         )
         # 2行目: 分子/分母
         st.markdown(
@@ -291,6 +293,7 @@ filter_params = dict(
     product_categories=filters["product_categories"],
     ad_groups=filters["ad_groups"],
     product_names=filters["product_names"],
+    ad_urls=filters.get("ad_urls"),
 )
 
 # データ最終日を取得

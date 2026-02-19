@@ -1,4 +1,4 @@
-"""マスタ管理ページ - 商品サイクル・アップセルマッピングの閲覧・編集."""
+"""マスタ管理ページ - 商品サイクル・アップセルマッピング・広告URL IDの閲覧・編集."""
 
 from __future__ import annotations
 
@@ -9,8 +9,10 @@ import streamlit as st
 
 from src.bigquery_client import fetch_filter_options, fetch_filtered_options, get_bigquery_client
 from src.config_loader import (
+    load_ad_url_mappings,
     load_product_cycles,
     load_upsell_mappings,
+    save_ad_url_mappings,
     save_product_cycles,
     save_upsell_mappings,
 )
@@ -20,7 +22,7 @@ from src.session import get_selected_company_key
 
 st.header("マスタ管理")
 
-tab_cycles, tab_upsell = st.tabs(["商品サイクル", "アップセルマッピング"])
+tab_cycles, tab_upsell, tab_ad_url = st.tabs(["商品サイクル", "アップセルマッピング", "広告URL ID"])
 
 
 # =====================================================================
@@ -263,3 +265,138 @@ with tab_upsell:
             st.session_state["upsell_mappings_edit"] = valid_mappings
             st.success(f"{len(valid_mappings)} 件のマッピングを保存しました。")
             st.rerun()
+
+
+# =====================================================================
+# 広告URL IDタブ
+# =====================================================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def _fetch_all_ad_url_ids(company_key: str) -> list[str]:
+    """BigQueryから広告URL ID一覧を取得."""
+    client = get_bigquery_client()
+    table_ref = get_table_ref(company_key)
+    return fetch_filter_options(client, table_ref, Col.AD_URL)
+
+
+with tab_ad_url:
+    st.subheader("広告URL ID → 広告URL名 マッピング")
+    st.caption(
+        "広告URL IDに表示名を紐付けます。"
+        "名前が定義されたIDはフィルタで名前表示されます。"
+        "未定義のIDはそのままIDで表示されます。"
+    )
+
+    company_key_ad = get_selected_company_key()
+    if not company_key_ad:
+        st.warning("サイドバーから会社を選択してください。")
+    else:
+        # BigQueryから全広告URL IDを取得
+        all_ad_url_ids = _fetch_all_ad_url_ids(company_key_ad)
+
+        # 既存マッピングを読み込み
+        existing_mappings = load_ad_url_mappings()
+        existing_map = {m["ad_url_id"]: m.get("ad_url_name", "") for m in existing_mappings}
+
+        # BigQueryにあるIDで既存マッピングにないものを追加（名前は空）
+        merged: list[dict] = []
+        seen_ids: set[str] = set()
+
+        # 既存マッピング分を先に追加
+        for m in existing_mappings:
+            aid = m.get("ad_url_id", "")
+            if aid:
+                merged.append({
+                    "ad_url_id": aid,
+                    "ad_url_name": m.get("ad_url_name", ""),
+                })
+                seen_ids.add(aid)
+
+        # BigQueryにあって未登録のIDを追加
+        for aid in all_ad_url_ids:
+            if aid not in seen_ids:
+                merged.append({"ad_url_id": aid, "ad_url_name": ""})
+                seen_ids.add(aid)
+
+        # DataFrameに変換
+        df_ad = pd.DataFrame(merged, columns=["ad_url_id", "ad_url_name"])
+
+        # --- 検索フィルタ ---
+        ad_search = st.text_input(
+            "IDまたは名前で検索",
+            placeholder="検索キーワード...",
+            key="ad_url_search",
+        )
+
+        # 検索の有無で表示を分岐（どちらも編集可能）
+        if ad_search.strip():
+            kw = ad_search.strip()
+            mask = (
+                df_ad["ad_url_id"].str.contains(kw, case=False, na=False)
+                | df_ad["ad_url_name"].str.contains(kw, case=False, na=False)
+            )
+            filtered_ad = df_ad[mask].copy()
+            st.info(f"🔍 {len(filtered_ad)} / {len(df_ad)} 件がヒット")
+
+            edited_ad = st.data_editor(
+                filtered_ad,
+                column_config={
+                    "ad_url_id": st.column_config.TextColumn(
+                        "広告URL ID", width="large", disabled=True,
+                    ),
+                    "ad_url_name": st.column_config.TextColumn(
+                        "広告URL名", width="large",
+                    ),
+                },
+                use_container_width=True,
+                height=600,
+                key="ad_url_editor_filtered",
+            )
+
+            if st.button("保存", type="primary", key="save_ad_url"):
+                # 編集された行をマージ: 検索結果の編集内容で元データを更新
+                edited_map = {
+                    r["ad_url_id"]: r.get("ad_url_name", "")
+                    for r in edited_ad.to_dict("records")
+                    if r.get("ad_url_id", "").strip()
+                }
+                save_data = []
+                for r in df_ad.to_dict("records"):
+                    aid = r.get("ad_url_id", "")
+                    if not aid.strip():
+                        continue
+                    if aid in edited_map:
+                        r["ad_url_name"] = edited_map[aid]
+                    save_data.append(r)
+                save_ad_url_mappings(save_data)
+                st.success(
+                    f"{len(save_data)} 件の広告URL IDマッピングを保存しました。"
+                )
+                st.rerun()
+        else:
+            edited_ad = st.data_editor(
+                df_ad,
+                num_rows="dynamic",
+                column_config={
+                    "ad_url_id": st.column_config.TextColumn(
+                        "広告URL ID", required=True, width="large",
+                    ),
+                    "ad_url_name": st.column_config.TextColumn(
+                        "広告URL名", width="large",
+                    ),
+                },
+                use_container_width=True,
+                height=600,
+                key="ad_url_editor",
+            )
+
+            if st.button("保存", type="primary", key="save_ad_url_all"):
+                save_data = (
+                    edited_ad.dropna(subset=["ad_url_id"])
+                    .to_dict("records")
+                )
+                save_data = [r for r in save_data if r.get("ad_url_id", "").strip()]
+                save_ad_url_mappings(save_data)
+                st.success(
+                    f"{len(save_data)} 件の広告URL IDマッピングを保存しました。"
+                )
+                st.rerun()

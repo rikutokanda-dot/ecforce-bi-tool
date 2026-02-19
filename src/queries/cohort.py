@@ -31,6 +31,7 @@ def build_cohort_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
+    ad_urls: list[str] | None = None,
 ) -> str:
     """通常コホート分析SQL (月別)."""
     table = get_table_ref(company_key)
@@ -40,6 +41,7 @@ def build_cohort_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
+        ad_urls=ad_urls,
     )
 
     retained_columns = ",\n      ".join(
@@ -87,6 +89,7 @@ def build_drilldown_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
+    ad_urls: list[str] | None = None,
 ) -> str:
     """ドリルダウン分析SQL (商品名別、広告グループ別、商品カテゴリ別).
 
@@ -99,6 +102,7 @@ def build_drilldown_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
+        ad_urls=ad_urls,
     )
 
     # 定期商品名の場合 revenue も取得
@@ -159,6 +163,7 @@ def build_aggregate_cohort_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
+    ad_urls: list[str] | None = None,
 ) -> str:
     """通算コホート分析SQL.
 
@@ -172,6 +177,7 @@ def build_aggregate_cohort_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
+        ad_urls=ad_urls,
     )
 
     retained_cols = ",\n      ".join(
