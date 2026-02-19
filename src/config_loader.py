@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import streamlit as st
+import re
 import yaml
 
 CONFIG_DIR = Path(__file__).parent.parent / "config"
@@ -138,8 +139,13 @@ def get_upsell_targets(product_name: str) -> list[dict]:
 # =====================================================================
 
 
+def _normalize_ad_url_id(aid: str) -> str:
+    """広告URL IDの .0 サフィックスを除去して正規化."""
+    return re.sub(r"\.0$", "", aid) if aid else aid
+
+
 def load_ad_url_mappings() -> list[dict]:
-    """広告URL IDマッピングを読み込む.
+    """広告URL IDマッピングを読み込む（.0を自動除去・重複統合）.
 
     Returns:
         [{"ad_url_id": "xxx", "ad_url_name": "表示名"}, ...]
@@ -148,14 +154,37 @@ def load_ad_url_mappings() -> list[dict]:
         return []
     with open(AD_URL_MAPPING_FILE, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-    return data.get("mappings", [])
+    raw = data.get("mappings", [])
+
+    # .0 を除去して重複統合（名前があるほうを優先）
+    seen: dict[str, dict] = {}
+    for m in raw:
+        aid = _normalize_ad_url_id(m.get("ad_url_id", ""))
+        if not aid:
+            continue
+        name = m.get("ad_url_name", "")
+        if aid in seen:
+            # 既にあるエントリに名前がなければ上書き
+            if name and not seen[aid].get("ad_url_name"):
+                seen[aid]["ad_url_name"] = name
+        else:
+            seen[aid] = {"ad_url_id": aid, "ad_url_name": name}
+    return list(seen.values())
 
 
 def save_ad_url_mappings(mappings: list[dict]) -> None:
-    """広告URL IDマッピングをYAMLに保存."""
+    """広告URL IDマッピングをYAMLに保存（.0を自動除去）."""
+    clean = []
+    seen: set[str] = set()
+    for m in mappings:
+        aid = _normalize_ad_url_id(m.get("ad_url_id", ""))
+        if not aid or aid in seen:
+            continue
+        seen.add(aid)
+        clean.append({"ad_url_id": aid, "ad_url_name": m.get("ad_url_name", "")})
     with open(AD_URL_MAPPING_FILE, "w", encoding="utf-8") as f:
         yaml.dump(
-            {"mappings": mappings},
+            {"mappings": clean},
             f,
             allow_unicode=True,
             default_flow_style=False,
