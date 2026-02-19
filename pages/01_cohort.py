@@ -72,6 +72,9 @@ def _styled_table(df: pd.DataFrame, value_col: str, color: str = "blue") -> str:
                 cells += f'<td style="background:{bg_color};color:{text_color};font-weight:600;text-align:right;padding:4px 8px;">{v}%</td>'
             elif isinstance(v, (int, float)) and col_name != df.columns[0]:
                 cells += f'<td style="text-align:right;padding:4px 8px;">{int(v):,}</td>'
+            elif col_name != df.columns[0] and isinstance(v, str) and "/" in v:
+                # 分子/分母 形式 → 右寄せ
+                cells += f'<td style="text-align:right;padding:4px 8px;white-space:nowrap;">{v}</td>'
             else:
                 cells += f'<td style="padding:4px 8px;">{v}</td>'
         rows_html += f"<tr>{cells}</tr>"
@@ -550,14 +553,22 @@ with main_tab_aggregate:
 
                 with col_surv:
                     st.markdown("##### 残存率")
-                    surv_df = agg_table[["定期回数", "継続人数", "残存率(%)"]].copy()
+                    surv_df = agg_table[["定期回数", "継続人数", "残存分母", "残存率(%)"]].copy()
+                    surv_df["人数"] = surv_df.apply(
+                        lambda r: f"{int(r['継続人数']):,}/{int(r['残存分母']):,}", axis=1,
+                    )
+                    surv_df = surv_df[["定期回数", "人数", "残存率(%)"]].copy()
                     surv_df.columns = ["回数", "人数", "残存率(%)"]
                     html = _styled_table(surv_df, value_col="残存率(%)", color="blue")
                     st.markdown(html, unsafe_allow_html=True)
 
                 with col_cont:
                     st.markdown("##### 継続率 (前回比)")
-                    cont_df = agg_table[["定期回数", "継続人数", "継続率(%)"]].copy()
+                    cont_df = agg_table[["定期回数", "継続人数", "継続分母", "継続率(%)"]].copy()
+                    cont_df["人数"] = cont_df.apply(
+                        lambda r: f"{int(r['継続人数']):,}/{int(r['継続分母']):,}", axis=1,
+                    )
+                    cont_df = cont_df[["定期回数", "人数", "継続率(%)"]].copy()
                     cont_df.columns = ["回数", "人数", "継続率(%)"]
                     html = _styled_table(cont_df, value_col="継続率(%)", color="green")
                     st.markdown(html, unsafe_allow_html=True)

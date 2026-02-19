@@ -261,6 +261,8 @@ def build_aggregate_table(
         rows.append({
             "定期回数": f"{i}回目",
             "継続人数": int(retained),
+            "残存分母": int(total),
+            "継続分母": int(prev_retained),
             "残存率(%)": round(survival_rate, 1),
             "継続率(%)": round(continuation_rate, 1),
             "平均単価(円)": int(round(avg_price)),
@@ -341,6 +343,8 @@ def _build_aggregate_table_filtered(
         rows.append({
             "定期回数": f"{i}回目",
             "継続人数": int(retained),
+            "残存分母": int(eligible_total),
+            "継続分母": int(prev_retained_same_months),
             "残存率(%)": round(survival_rate, 1),
             "継続率(%)": round(continuation_rate, 1),
             "平均単価(円)": int(round(avg_price)),
@@ -439,6 +443,7 @@ def build_product_summary_table(
 
         # 継続率(前回比): 同じ eligible 月集合の前回 retained をベースにする
         if i == 1:
+            prev_retained = eligible_total
             continuation_rate = survival_rate
         else:
             prev_col = f"retained_{i - 1}"
@@ -451,8 +456,8 @@ def build_product_summary_table(
             continuation_rate = round(retained / prev_retained * 100, 1) if prev_retained > 0 else 0.0
 
         label = f"{i}回目"
-        continuation_row[label] = f"{continuation_rate}%"
-        survival_row[label] = f"{survival_rate}%"
+        continuation_row[label] = f"{int(retained)}/{int(prev_retained)} ({continuation_rate}%)"
+        survival_row[label] = f"{int(retained)}/{int(eligible_total)} ({survival_rate}%)"
         count_row[label] = f"{int(retained)}件"
 
     if len(continuation_row) <= 1:
@@ -494,6 +499,7 @@ def build_dimension_summary_table(
 
         # 継続率(前回比): i-1回目のretainedをベースにする
         if i == 1:
+            prev_retained = total_users
             continuation_rate = round(retained / total_users * 100, 1) if total_users > 0 else 0.0
         else:
             prev_col = f"retained_{i - 1}"
@@ -504,8 +510,8 @@ def build_dimension_summary_table(
             continuation_rate = round(retained / prev_retained * 100, 1) if prev_retained > 0 else 0.0
 
         label = f"{i}回目"
-        continuation_row[label] = f"{continuation_rate}%"
-        survival_row[label] = f"{survival_rate}%"
+        continuation_row[label] = f"{int(retained)}/{int(prev_retained)} ({continuation_rate}%)"
+        survival_row[label] = f"{int(retained)}/{int(total_users)} ({survival_rate}%)"
         count_row[label] = f"{int(retained)}件"
 
     return pd.DataFrame([continuation_row, survival_row, count_row])
