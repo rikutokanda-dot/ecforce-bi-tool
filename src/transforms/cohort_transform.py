@@ -422,36 +422,33 @@ def build_product_summary_table(
         if col not in group.columns:
             break
 
-        # i回目のデータが揃っている月だけをフィルタ
-        eligible_rows = group[
+        # i回目のデータが揃っている月のみ
+        eligible = group[
             group["cohort_month"].map(lambda cm: month_max_count.get(cm, 0) >= i)
         ]
-
-        if eligible_rows.empty:
+        if eligible.empty:
             break
 
-        eligible_total = eligible_rows["total_users"].astype(float).sum()
-        retained = float(pd.to_numeric(eligible_rows[col], errors="coerce").fillna(0).sum())
+        eligible_total = eligible["total_users"].astype(float).sum()
+        retained = float(pd.to_numeric(eligible[col], errors="coerce").fillna(0).sum())
 
         if retained == 0 and i > 1:
             break
-        if eligible_total == 0:
-            break
 
-        survival_rate = round(retained / eligible_total * 100, 1)
+        survival_rate = round(retained / eligible_total * 100, 1) if eligible_total > 0 else 0.0
 
-        # 継続率(前回比): 同じeligible月のi-1回目retainedをベースにする
+        # 継続率(前回比): 同じ eligible 月集合の前回 retained をベースにする
         if i == 1:
             continuation_rate = survival_rate
         else:
             prev_col = f"retained_{i - 1}"
-            if prev_col in eligible_rows.columns:
-                prev_retained_same = float(
-                    pd.to_numeric(eligible_rows[prev_col], errors="coerce").fillna(0).sum()
+            if prev_col in eligible.columns:
+                prev_retained = float(
+                    pd.to_numeric(eligible[prev_col], errors="coerce").fillna(0).sum()
                 )
             else:
-                prev_retained_same = eligible_total
-            continuation_rate = round(retained / prev_retained_same * 100, 1) if prev_retained_same > 0 else 0.0
+                prev_retained = eligible_total
+            continuation_rate = round(retained / prev_retained * 100, 1) if prev_retained > 0 else 0.0
 
         label = f"{i}回目"
         continuation_row[label] = f"{continuation_rate}%"
