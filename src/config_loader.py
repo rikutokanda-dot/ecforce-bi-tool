@@ -1,17 +1,96 @@
-"""設定ファイルの読み込み・書き込み."""
+"""設定ファイルの読み込み・書き込み (GCS永続化対応).
+
+Cloud Run上ではGCSバケットに保存・読み込みし、
+ローカル開発時はconfig/ディレクトリにフォールバック。
+"""
 
 from __future__ import annotations
 
+import io
+import os
+import re
 from pathlib import Path
 
 import streamlit as st
-import re
 import yaml
 
 CONFIG_DIR = Path(__file__).parent.parent / "config"
 PRODUCT_CYCLES_FILE = CONFIG_DIR / "product_cycles.yaml"
 UPSELL_MAPPING_FILE = CONFIG_DIR / "upsell_mapping.yaml"
 AD_URL_MAPPING_FILE = CONFIG_DIR / "ad_url_mapping.yaml"
+
+# GCS設定
+GCS_BUCKET = os.environ.get("CONFIG_GCS_BUCKET", "ecforce-bi-config")
+GCS_PREFIX = "config/"
+
+
+# =====================================================================
+# GCS読み書きヘルパー
+# =====================================================================
+
+def _get_gcs_client():
+    """GCSクライアントを取得。失敗時はNone。"""
+    try:
+        from google.cloud import storage
+        return storage.Client()
+    except Exception:
+        return None
+
+
+def _read_from_gcs(filename: str) -> dict | None:
+    """GCSからYAMLを読み込む。失敗時はNone。"""
+    client = _get_gcs_client()
+    if not client:
+        return None
+    try:
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(f"{GCS_PREFIX}{filename}")
+        if not blob.exists():
+            return None
+        content = blob.download_as_text(encoding="utf-8")
+        return yaml.safe_load(content) or {}
+    except Exception:
+        return None
+
+
+def _write_to_gcs(filename: str, data: dict) -> bool:
+    """GCSにYAMLを書き込む。成功時True。"""
+    client = _get_gcs_client()
+    if not client:
+        return False
+    try:
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(f"{GCS_PREFIX}{filename}")
+        content = yaml.dump(
+            data, allow_unicode=True,
+            default_flow_style=False, sort_keys=False,
+        )
+        blob.upload_from_string(content, content_type="text/yaml")
+        return True
+    except Exception:
+        return False
+
+
+def _read_yaml(filename: str, local_path: Path) -> dict:
+    """GCS優先、ローカルフォールバックでYAMLを読み込む。"""
+    # GCSから読み込み
+    data = _read_from_gcs(filename)
+    if data is not None:
+        return data
+    # ローカルフォールバック
+    if local_path.exists():
+        with open(local_path, encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def _write_yaml(filename: str, local_path: Path, data: dict) -> None:
+    """GCSとローカル両方に書き込む。"""
+    # GCSに書き込み
+    _write_to_gcs(filename, data)
+    # ローカルにも書き込み（開発時用）
+    with open(local_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
 
 # =====================================================================
@@ -22,8 +101,7 @@ AD_URL_MAPPING_FILE = CONFIG_DIR / "ad_url_mapping.yaml"
 @st.cache_data
 def load_companies() -> list[dict]:
     """会社一覧を読み込む."""
-    with open(CONFIG_DIR / "companies.yaml", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    data = _read_yaml("companies.yaml", CONFIG_DIR / "companies.yaml")
     return data.get("companies", [])
 
 
@@ -44,10 +122,7 @@ def load_product_cycles() -> dict:
         {"products": [{"name": ..., "cycle1": ..., "cycle2": ...}, ...],
          "defaults": {"cycle1": 30, "cycle2": 30}}
     """
-    if not PRODUCT_CYCLES_FILE.exists():
-        return {"products": [], "defaults": {"cycle1": 30, "cycle2": 30}}
-    with open(PRODUCT_CYCLES_FILE, encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+    data = _read_yaml("product_cycles.yaml", PRODUCT_CYCLES_FILE)
     return {
         "products": data.get("products", []),
         "defaults": data.get("defaults", {"cycle1": 30, "cycle2": 30}),
@@ -66,8 +141,7 @@ def get_product_cycle(product_name: str) -> tuple[int, int]:
 
 def save_product_cycles(data: dict) -> None:
     """商品サイクル設定をYAMLに保存."""
-    with open(PRODUCT_CYCLES_FILE, "w", encoding="utf-8") as f:
-        yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    _write_yaml("product_cycles.yaml", PRODUCT_CYCLES_FILE, data)
 
 
 # =====================================================================
@@ -81,10 +155,7 @@ def load_upsell_mappings() -> list[dict]:
     新形式: label / numerator_names / denominator_names / period_ref_names
     後方互換: 旧形式(from_names / upsell_name / upsell_upsell_name)も自動変換。
     """
-    if not UPSELL_MAPPING_FILE.exists():
-        return []
-    with open(UPSELL_MAPPING_FILE, encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+    data = _read_yaml("upsell_mapping.yaml", UPSELL_MAPPING_FILE)
     raw = data.get("mappings", [])
     result = []
     for m in raw:
@@ -108,14 +179,7 @@ def load_upsell_mappings() -> list[dict]:
 
 def save_upsell_mappings(mappings: list[dict]) -> None:
     """アップセルマッピングをYAMLに保存."""
-    with open(UPSELL_MAPPING_FILE, "w", encoding="utf-8") as f:
-        yaml.dump(
-            {"mappings": mappings},
-            f,
-            allow_unicode=True,
-            default_flow_style=False,
-            sort_keys=False,
-        )
+    _write_yaml("upsell_mapping.yaml", UPSELL_MAPPING_FILE, {"mappings": mappings})
 
 
 def get_upsell_target(product_name: str) -> dict | None:
@@ -150,10 +214,7 @@ def load_ad_url_mappings() -> list[dict]:
     Returns:
         [{"ad_url_id": "xxx", "ad_url_name": "表示名"}, ...]
     """
-    if not AD_URL_MAPPING_FILE.exists():
-        return []
-    with open(AD_URL_MAPPING_FILE, encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+    data = _read_yaml("ad_url_mapping.yaml", AD_URL_MAPPING_FILE)
     raw = data.get("mappings", [])
 
     # .0 を除去して重複統合（名前があるほうを優先）
@@ -182,14 +243,7 @@ def save_ad_url_mappings(mappings: list[dict]) -> None:
             continue
         seen.add(aid)
         clean.append({"ad_url_id": aid, "ad_url_name": m.get("ad_url_name", "")})
-    with open(AD_URL_MAPPING_FILE, "w", encoding="utf-8") as f:
-        yaml.dump(
-            {"mappings": clean},
-            f,
-            allow_unicode=True,
-            default_flow_style=False,
-            sort_keys=False,
-        )
+    _write_yaml("ad_url_mapping.yaml", AD_URL_MAPPING_FILE, {"mappings": clean})
 
 
 def get_ad_url_display_map() -> dict[str, str]:
