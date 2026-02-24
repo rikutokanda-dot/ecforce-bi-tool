@@ -19,6 +19,8 @@ from src.constants import Col
 from src.queries.common import get_table_ref
 from src.queries.cohort import (
     build_aggregate_cohort_sql,
+    build_cohort_customer_diff_sql,
+    build_cohort_customer_ids_sql,
     build_cohort_sql,
     build_drilldown_sql,
     build_max_date_sql,
@@ -42,6 +44,62 @@ from src.transforms.cohort_transform import (
     compute_summary_metrics,
     compute_upsell_rate,
 )
+
+
+# =====================================================================
+# ヘルパー: ドリルダウンサマリーHTMLテーブル
+# =====================================================================
+def _render_drilldown_summary_html(df: pd.DataFrame) -> str:
+    """ドリルダウンサマリーテーブルをHTMLで描画。
+
+    セル値が「90.0%\\n(9613/10680)」形式の場合、
+    %を大きく、(分子/分母)を半分サイズで小さく表示する。
+    """
+    if df.empty:
+        return ""
+
+    header = "".join(
+        f'<th style="padding:6px 8px;text-align:center;border-bottom:2px solid #ddd;'
+        f'font-size:12px;white-space:nowrap;">{c}</th>'
+        for c in df.columns
+    )
+
+    rows_html = ""
+    for _, row in df.iterrows():
+        cells = ""
+        for col_name in df.columns:
+            v = str(row[col_name])
+            if col_name == "指標":
+                cells += (
+                    f'<td style="padding:6px 8px;font-weight:600;'
+                    f'white-space:nowrap;font-size:13px;">{v}</td>'
+                )
+            elif "\n" in v:
+                # "90.0%\n(9613/10680)" → %を大きく、分子分母を小さく
+                parts = v.split("\n", 1)
+                pct_part = parts[0]
+                detail_part = parts[1] if len(parts) > 1 else ""
+                cells += (
+                    f'<td style="text-align:center;padding:4px 6px;white-space:nowrap;">'
+                    f'<span style="font-size:14px;font-weight:600;">{pct_part}</span><br>'
+                    f'<span style="font-size:10px;color:#888;">{detail_part}</span>'
+                    f'</td>'
+                )
+            else:
+                cells += (
+                    f'<td style="text-align:center;padding:4px 6px;'
+                    f'white-space:nowrap;font-size:13px;">{v}</td>'
+                )
+        rows_html += f"<tr>{cells}</tr>"
+
+    return f"""
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+    <thead><tr>{header}</tr></thead>
+    <tbody>{rows_html}</tbody>
+    </table>
+    </div>
+    """
 
 
 # =====================================================================
@@ -266,6 +324,108 @@ def _render_upsell_monthly(
 
 
 # =====================================================================
+# ヘルパー: 顧客IDダウンロード (fragment)
+# =====================================================================
+def _option_to_order_count(opt: str) -> int | None:
+    """選択肢をorder_countに変換。新規顧客数=None。"""
+    if opt == "新規顧客数":
+        return None
+    return int(opt.replace("回目", ""))
+
+
+@st.fragment
+def _render_customer_id_download(
+    client,
+    cohort_months: list[str],
+    max_order: int,
+    filter_params: dict,
+):
+    """顧客IDダウンロードUI。fragment化でselectbox操作時にタブ遷移しない。"""
+    st.divider()
+    st.markdown("##### 顧客IDダウンロード")
+
+    target_options = ["新規顧客数"] + [f"{i}回目" for i in range(1, max_order + 1)]
+
+    dl_month = st.selectbox("コホート月", cohort_months, key="dl_cohort_month")
+
+    # --- 対象の顧客ID ---
+    st.markdown("###### 対象の顧客ID")
+    dl_target = st.selectbox("対象", target_options, key="dl_target")
+
+    if st.button("CSVを生成", key="btn_gen_customer_ids"):
+        oc = _option_to_order_count(dl_target)
+        id_sql = build_cohort_customer_ids_sql(
+            order_count=oc, cohort_month=dl_month, **filter_params,
+        )
+        try:
+            with st.spinner("クエリ実行中..."):
+                df_ids = execute_query(client, id_sql)
+            if df_ids.empty:
+                st.info("該当する顧客がいません。")
+            else:
+                csv_data = df_ids.to_csv(index=False).encode("utf-8-sig")
+                st.session_state["_dl_customer_csv"] = csv_data
+                st.session_state["_dl_customer_filename"] = f"customer_ids_{dl_month}_{dl_target}.csv"
+                st.session_state["_dl_customer_count"] = len(df_ids)
+        except Exception as e:
+            st.error(f"エラー: {e}")
+
+    if "_dl_customer_csv" in st.session_state:
+        st.download_button(
+            f"{st.session_state['_dl_customer_count']}件の顧客IDをダウンロード",
+            st.session_state["_dl_customer_csv"],
+            file_name=st.session_state["_dl_customer_filename"],
+            mime="text/csv",
+            key="btn_dl_csv",
+        )
+
+    # --- 差分ダウンロード ---
+    st.markdown("###### 差分の顧客ID（A - B）")
+    st.caption("Aに含まれるがBに含まれない顧客IDをダウンロード")
+    c_base, c_sub = st.columns(2)
+    with c_base:
+        dl_base = st.selectbox("A", target_options, index=0, key="dl_diff_base")
+    with c_sub:
+        dl_sub = st.selectbox("B", target_options, index=1, key="dl_diff_sub")
+
+    if st.button("差分CSVを生成", key="btn_gen_diff_ids"):
+        base_oc = _option_to_order_count(dl_base)
+        sub_oc = _option_to_order_count(dl_sub)
+        diff_sql = build_cohort_customer_diff_sql(
+            company_key=filter_params["company_key"],
+            cohort_month=dl_month,
+            base_order_count=base_oc,
+            subtract_order_count=sub_oc,
+            date_from=filter_params.get("date_from"),
+            date_to=filter_params.get("date_to"),
+            product_categories=filter_params.get("product_categories"),
+            ad_groups=filter_params.get("ad_groups"),
+            product_names=filter_params.get("product_names"),
+        )
+        try:
+            with st.spinner("クエリ実行中..."):
+                df_diff = execute_query(client, diff_sql)
+            if df_diff.empty:
+                st.info("差分に該当する顧客がいません。")
+            else:
+                csv_diff = df_diff.to_csv(index=False).encode("utf-8-sig")
+                st.session_state["_dl_diff_csv"] = csv_diff
+                st.session_state["_dl_diff_filename"] = f"customer_ids_{dl_month}_{dl_base}-{dl_sub}.csv"
+                st.session_state["_dl_diff_count"] = len(df_diff)
+        except Exception as e:
+            st.error(f"エラー: {e}")
+
+    if "_dl_diff_csv" in st.session_state:
+        st.download_button(
+            f"{st.session_state['_dl_diff_count']}件の差分顧客IDをダウンロード",
+            st.session_state["_dl_diff_csv"],
+            file_name=st.session_state["_dl_diff_filename"],
+            mime="text/csv",
+            key="btn_dl_diff_csv",
+        )
+
+
+# =====================================================================
 # ページ初期化
 # =====================================================================
 st.header("コホート分析")
@@ -293,7 +453,7 @@ filter_params = dict(
     product_categories=filters["product_categories"],
     ad_groups=filters["ad_groups"],
     product_names=filters["product_names"],
-    ad_urls=filters.get("ad_urls"),
+    ad_url_params=filters.get("ad_url_params"),
 )
 
 # データ最終日を取得
@@ -326,8 +486,8 @@ main_tab_drilldown, main_tab_aggregate, main_tab_monthly, main_tab_upsell = st.t
 # ドリルダウンタブ — サブタブで軸を切り替え
 # =====================================================================
 with main_tab_drilldown:
-    dd_tab_product, dd_tab_adgroup, dd_tab_category = st.tabs(
-        ["定期商品名", "広告グループ", "商品カテゴリ"]
+    dd_tab_product, dd_tab_adgroup, dd_tab_category, dd_tab_adurl = st.tabs(
+        ["定期商品名", "広告グループ", "商品カテゴリ", "広告URLパラメータ"]
     )
 
     # ========== 定期商品名 ==========
@@ -392,7 +552,10 @@ with main_tab_drilldown:
                         if summary.empty:
                             st.info("データがありません。")
                             continue
-                        st.dataframe(summary, use_container_width=True, hide_index=True)
+                        st.markdown(
+                            _render_drilldown_summary_html(summary),
+                            unsafe_allow_html=True,
+                        )
 
     # ========== 広告グループ ==========
     with dd_tab_adgroup:
@@ -422,7 +585,10 @@ with main_tab_drilldown:
                         if summary.empty:
                             st.info("データがありません。")
                             continue
-                        st.dataframe(summary, use_container_width=True, hide_index=True)
+                        st.markdown(
+                            _render_drilldown_summary_html(summary),
+                            unsafe_allow_html=True,
+                        )
 
     # ========== 商品カテゴリ ==========
     with dd_tab_category:
@@ -469,7 +635,45 @@ with main_tab_drilldown:
                         if summary.empty:
                             st.info("データがありません。")
                             continue
-                        st.dataframe(summary, use_container_width=True, hide_index=True)
+                        st.markdown(
+                            _render_drilldown_summary_html(summary),
+                            unsafe_allow_html=True,
+                        )
+
+    # ========== 広告URLパラメータ ==========
+    with dd_tab_adurl:
+        if st.button("表示する", key="btn_dd_adurl", type="primary"):
+            st.session_state["dd_adurl_shown"] = True
+        if not st.session_state.get("dd_adurl_shown"):
+            st.info("フィルタを設定して「表示する」を押してください。")
+        else:
+            dd_sql_url = build_drilldown_sql(
+                drilldown_column=Col.AD_URL_PARAM,
+                **filter_params,
+            )
+            try:
+                dd_df_url = execute_query(client, dd_sql_url)
+            except Exception as e:
+                st.error(f"BigQueryクエリ実行エラー: {e}")
+                dd_df_url = pd.DataFrame()
+
+            if dd_df_url.empty:
+                st.info("該当するデータが見つかりませんでした。")
+            else:
+                dim_urls = sorted(dd_df_url["dimension_col"].unique())
+                st.info(f"**広告URLパラメータ別**: {len(dim_urls)} 件")
+                st.caption(f"データカットオフ日: {data_cutoff_date}")
+
+                for url_name in dim_urls:
+                    with st.expander(f"{url_name}", expanded=False):
+                        summary = build_dimension_summary_table(dd_df_url, url_name)
+                        if summary.empty:
+                            st.info("データがありません。")
+                            continue
+                        st.markdown(
+                            _render_drilldown_summary_html(summary),
+                            unsafe_allow_html=True,
+                        )
 
 
 # =====================================================================
@@ -658,6 +862,50 @@ with main_tab_aggregate:
 
                 st.plotly_chart(fig, use_container_width=True)
 
+                # ========== 継続率 & 1年LTV 推移グラフ ==========
+                fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+
+                fig2.add_trace(
+                    go.Bar(
+                        x=agg_table["定期回数"],
+                        y=agg_table["継続率(%)"],
+                        name="継続率(%)",
+                        marker_color="rgba(52, 211, 153, 0.7)",
+                        text=agg_table["継続率(%)"].apply(lambda v: f"{v}%"),
+                        textposition="outside",
+                        textfont=dict(size=10),
+                    ),
+                    secondary_y=False,
+                )
+
+                if not ltv_table.empty:
+                    fig2.add_trace(
+                        go.Scatter(
+                            x=ltv_table["定期回数"],
+                            y=ltv_table["LTV(円)"],
+                            name="1年LTV(円)",
+                            mode="lines+markers+text",
+                            text=[f"¥{v:,}" for v in ltv_table["LTV(円)"]],
+                            textposition="top center",
+                            textfont=dict(size=9),
+                            line=dict(color="#E74C3C", width=2.5),
+                            marker=dict(size=7),
+                        ),
+                        secondary_y=True,
+                    )
+
+                fig2.update_layout(
+                    title="継続率 & 1年LTV 推移",
+                    xaxis_title="定期回数",
+                    height=420,
+                    margin=dict(l=50, r=50, t=50, b=40),
+                    legend=dict(orientation="h", y=1.12),
+                )
+                fig2.update_yaxes(title_text="継続率 (%)", range=[0, 110], secondary_y=False)
+                fig2.update_yaxes(title_text="LTV (円)", secondary_y=True)
+
+                st.plotly_chart(fig2, use_container_width=True)
+
                 st.divider()
                 render_download_buttons(agg_table, f"aggregate_{company_key}")
 
@@ -668,57 +916,68 @@ with main_tab_aggregate:
 with main_tab_monthly:
     if not filters["product_names"]:
         st.info("正確なデータ表示のため、サイドバーから「定期商品名」を選択してください。")
-    elif not st.button("表示する", key="btn_monthly", type="primary"):
-        st.info("フィルタを設定して「表示する」を押してください。")
     else:
-        monthly_sql = build_cohort_sql(**filter_params)
-        try:
-            monthly_df = execute_query(client, monthly_sql)
-        except Exception as e:
-            st.error(f"BigQueryクエリ実行エラー: {e}")
-            monthly_df = pd.DataFrame()
-
-        if monthly_df.empty:
-            st.info("該当するデータが見つかりませんでした。")
+        if st.button("表示する", key="btn_monthly", type="primary"):
+            st.session_state["monthly_shown"] = True
+        if not st.session_state.get("monthly_shown"):
+            st.info("フィルタを設定して「表示する」を押してください。")
         else:
-            summary_m = compute_summary_metrics(monthly_df)
-            render_metrics([
-                {"label": "新規顧客数 (合計)", "value": f"{summary_m['total_new_users']:,}"},
-                {"label": "2回目平均継続率", "value": f"{summary_m['avg_retention_2']}%"},
-                {"label": "最古月12回目残存率", "value": f"{summary_m['latest_12m_retention']}%"},
-            ])
+            monthly_sql = build_cohort_sql(**filter_params)
+            try:
+                monthly_df = execute_query(client, monthly_sql)
+            except Exception as e:
+                st.error(f"BigQueryクエリ実行エラー: {e}")
+                monthly_df = pd.DataFrame()
 
-            st.divider()
+            if monthly_df.empty:
+                st.info("該当するデータが見つかりませんでした。")
+            else:
+                summary_m = compute_summary_metrics(monthly_df)
+                render_metrics([
+                    {"label": "新規顧客数 (合計)", "value": f"{summary_m['total_new_users']:,}"},
+                    {"label": "2回目平均継続率", "value": f"{summary_m['avg_retention_2']}%"},
+                    {"label": "最古月12回目残存率", "value": f"{summary_m['latest_12m_retention']}%"},
+                ])
 
-            tab_heatmap, tab_line, tab_table, tab_schedule = st.tabs(
-                ["ヒートマップ", "折れ線グラフ", "データテーブル", "発送日目安"]
-            )
+                st.divider()
 
-            # 商品名1つ選択時のみマスク適用
-            _monthly_pn = filters["product_names"][0] if filters["product_names"] and len(filters["product_names"]) == 1 else None
-            rate_matrix = build_retention_rate_matrix(monthly_df, data_cutoff_date, _monthly_pn)
-            retention_table = build_retention_table(monthly_df, data_cutoff_date, _monthly_pn)
-
-            with tab_heatmap:
-                render_cohort_heatmap(rate_matrix)
-
-            with tab_line:
-                render_retention_line_chart(rate_matrix)
-
-            with tab_table:
-                st.dataframe(retention_table, use_container_width=True, hide_index=True)
-                render_download_buttons(retention_table, f"cohort_{company_key}")
-
-            with tab_schedule:
-                selected_pn = filters["product_names"][0] if filters["product_names"] else None
-                schedule = build_shipping_schedule(
-                    cohort_months=monthly_df["cohort_month"].tolist(),
-                    product_name=selected_pn,
+                tab_heatmap, tab_line, tab_table, tab_schedule = st.tabs(
+                    ["ヒートマップ", "折れ線グラフ", "データテーブル", "発送日目安"]
                 )
-                if not schedule.empty:
-                    st.dataframe(schedule, use_container_width=True, hide_index=True)
-                else:
-                    st.info("発送スケジュールを表示するデータがありません。")
+
+                # 商品名1つ選択時のみマスク適用
+                _monthly_pn = filters["product_names"][0] if filters["product_names"] and len(filters["product_names"]) == 1 else None
+                rate_matrix = build_retention_rate_matrix(monthly_df, data_cutoff_date, _monthly_pn)
+                retention_table = build_retention_table(monthly_df, data_cutoff_date, _monthly_pn)
+
+                with tab_heatmap:
+                    render_cohort_heatmap(rate_matrix)
+
+                with tab_line:
+                    render_retention_line_chart(rate_matrix)
+
+                with tab_table:
+                    st.dataframe(retention_table, use_container_width=True, hide_index=True)
+                    render_download_buttons(retention_table, f"cohort_{company_key}")
+
+                    # 顧客IDダウンロード（fragment化でタブ遷移を防止）
+                    _cohort_months_sorted = sorted(monthly_df["cohort_month"].unique())
+                    _ret_cols = [c for c in monthly_df.columns if c.startswith("retained_")]
+                    _max_order = max(int(c.replace("retained_", "")) for c in _ret_cols) if _ret_cols else 12
+                    _render_customer_id_download(
+                        client, _cohort_months_sorted, _max_order, filter_params,
+                    )
+
+                with tab_schedule:
+                    selected_pn = filters["product_names"][0] if filters["product_names"] else None
+                    schedule = build_shipping_schedule(
+                        cohort_months=monthly_df["cohort_month"].tolist(),
+                        product_name=selected_pn,
+                    )
+                    if not schedule.empty:
+                        st.dataframe(schedule, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("発送スケジュールを表示するデータがありません。")
 
 
 # =====================================================================
@@ -727,28 +986,41 @@ with main_tab_monthly:
 with main_tab_upsell:
     _all_mappings_raw = load_upsell_mappings()
 
-    # サイドバーフィルタで対象マッピングを絞り込む
+    # 会社テーブルに存在する商品名を取得し、period_ref_namesが存在するマッピングのみに絞る
+    _table_ref = get_table_ref(company_key)
+    try:
+        _all_company_products = set(fetch_filtered_options(
+            client, _table_ref, Col.SUBSCRIPTION_PRODUCT_NAME,
+        ))
+    except Exception:
+        _all_company_products = set()
+
+    _company_mappings = [
+        m for m in _all_mappings_raw
+        if _all_company_products & set(m.get("period_ref_names", []))
+    ]
+
+    # さらにサイドバーフィルタで絞り込む
     _upsell_filter_pnames = filters.get("product_names")
     _upsell_filter_cats = filters.get("product_categories")
     if _upsell_filter_pnames:
         _pname_set = set(_upsell_filter_pnames)
         all_mappings = [
-            m for m in _all_mappings_raw
+            m for m in _company_mappings
             if _pname_set & (set(m.get("numerator_names", [])) | set(m.get("denominator_names", [])))
         ]
     elif _upsell_filter_cats:
-        _table_ref = get_table_ref(company_key)
         _cat_product_names = fetch_filtered_options(
             client, _table_ref, Col.SUBSCRIPTION_PRODUCT_NAME,
             {Col.PRODUCT_CATEGORY: _upsell_filter_cats},
         )
         _cat_pname_set = set(_cat_product_names)
         all_mappings = [
-            m for m in _all_mappings_raw
+            m for m in _company_mappings
             if _cat_pname_set & (set(m.get("numerator_names", [])) | set(m.get("denominator_names", [])))
         ]
     else:
-        all_mappings = list(_all_mappings_raw)
+        all_mappings = list(_company_mappings)
 
     if not _all_mappings_raw:
         st.info("アップセルマッピングが設定されていません。マスタ管理で設定してください。")

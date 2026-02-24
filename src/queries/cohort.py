@@ -31,7 +31,7 @@ def build_cohort_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
-    ad_urls: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
 ) -> str:
     """通常コホート分析SQL (月別)."""
     table = get_table_ref(company_key)
@@ -41,7 +41,7 @@ def build_cohort_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
-        ad_urls=ad_urls,
+        ad_url_params=ad_url_params,
     )
 
     retained_columns = ",\n      ".join(
@@ -89,11 +89,13 @@ def build_drilldown_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
-    ad_urls: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
+    ad_url_params_filter: list[str] | None = None,
 ) -> str:
-    """ドリルダウン分析SQL (商品名別、広告グループ別、商品カテゴリ別).
+    """ドリルダウン分析SQL (商品名別、広告グループ別、商品カテゴリ別、広告URLパラメータ別).
 
     定期商品名ドリルダウン時は revenue も取得する。
+    ad_url_params_filter: 広告URLパラメータドリルダウン時、特定の値のみに絞り込む。
     """
     table = get_table_ref(company_key)
     filters = build_filter_clause(
@@ -102,7 +104,7 @@ def build_drilldown_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
-        ad_urls=ad_urls,
+        ad_url_params=ad_url_params,
     )
 
     # 定期商品名の場合 revenue も取得
@@ -120,21 +122,30 @@ def build_drilldown_sql(
             for i in range(1, MAX_RETENTION_MONTHS + 1)
         )
 
+    dim_expr = f"`{drilldown_column}`"
+    dim_not_null = f"`{drilldown_column}` IS NOT NULL AND `{drilldown_column}` != ''"
+
+    # 広告URLパラメータフィルタ
+    ad_url_param_filter = ""
+    if ad_url_params_filter:
+        conditions = " OR ".join(f"`{Col.AD_URL_PARAM}` = '{p}'" for p in ad_url_params_filter)
+        ad_url_param_filter = f"AND ({conditions})"
+
     return f"""
     WITH
     cohort_base AS (
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        `{drilldown_column}` AS dimension_col,
+        {dim_expr} AS dimension_col,
         FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month,
         MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
         MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
       WHERE {_SUB_COUNT} = 1
       {filters}
-      AND `{drilldown_column}` IS NOT NULL
-      AND `{drilldown_column}` != ''
+      AND {dim_not_null}
+      {ad_url_param_filter}
       GROUP BY customer_id, first_product_name, dimension_col, cohort_month
       HAVING has_entry_data = 1 AND has_logic_2 = 0
     )
@@ -163,7 +174,7 @@ def build_aggregate_cohort_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
-    ad_urls: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
 ) -> str:
     """通算コホート分析SQL.
 
@@ -177,7 +188,7 @@ def build_aggregate_cohort_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
-        ad_urls=ad_urls,
+        ad_url_params=ad_url_params,
     )
 
     retained_cols = ",\n      ".join(
@@ -439,4 +450,125 @@ def build_upsell_rate_monthly_sql(
     FROM monthly_denominator de
     FULL OUTER JOIN monthly_numerator nu ON de.cohort_month = nu.cohort_month
     ORDER BY cohort_month
+    """
+
+
+def _cohort_base_cte(table: str, filters: str) -> str:
+    """cohort_base CTEの共通定義."""
+    return f"""
+    cohort_base AS (
+      SELECT
+        `{Col.CUSTOMER_ID}` AS customer_id,
+        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
+        FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+      FROM {table}
+      WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+      {filters}
+      GROUP BY customer_id, first_product_name, cohort_month
+      HAVING has_entry_data = 1 AND has_logic_2 = 0
+    )
+    """
+
+
+def build_cohort_customer_ids_sql(
+    company_key: str,
+    cohort_month: str,
+    order_count: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    product_categories: list[str] | None = None,
+    ad_groups: list[str] | None = None,
+    product_names: list[str] | None = None,
+) -> str:
+    """コホート月の顧客IDリストを取得するSQL.
+
+    order_count=None: 新規顧客数全員（cohort_base全員）を返す。
+    order_count指定: その回数のshipped+completed顧客IDを返す。
+    """
+    table = get_table_ref(company_key)
+    filters = build_filter_clause(
+        date_from=date_from, date_to=date_to,
+        product_categories=product_categories,
+        ad_groups=ad_groups, product_names=product_names,
+    )
+    cte = _cohort_base_cte(table, filters)
+
+    if order_count is None:
+        # 新規顧客数全員
+        return f"""
+        WITH {cte}
+        SELECT DISTINCT t1.customer_id
+        FROM cohort_base t1
+        WHERE t1.cohort_month = '{cohort_month}'
+        ORDER BY customer_id
+        """
+    else:
+        # 指定回数のshipped+completed顧客
+        return f"""
+        WITH {cte}
+        SELECT DISTINCT t1.customer_id
+        FROM cohort_base t1
+        INNER JOIN {table} t2
+          ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
+          AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
+          AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+          AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+          AND SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {order_count}
+        WHERE t1.cohort_month = '{cohort_month}'
+        ORDER BY customer_id
+        """
+
+
+def build_cohort_customer_diff_sql(
+    company_key: str,
+    cohort_month: str,
+    base_order_count: int | None,
+    subtract_order_count: int | None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    product_categories: list[str] | None = None,
+    ad_groups: list[str] | None = None,
+    product_names: list[str] | None = None,
+) -> str:
+    """2つの対象の差分（base - subtract）の顧客IDを取得するSQL.
+
+    order_count=None は新規顧客数全員を意味する。
+    """
+    table = get_table_ref(company_key)
+    filters = build_filter_clause(
+        date_from=date_from, date_to=date_to,
+        product_categories=product_categories,
+        ad_groups=ad_groups, product_names=product_names,
+    )
+    cte = _cohort_base_cte(table, filters)
+
+    def _id_subquery(oc: int | None) -> str:
+        if oc is None:
+            return f"""
+            SELECT DISTINCT t1.customer_id
+            FROM cohort_base t1
+            WHERE t1.cohort_month = '{cohort_month}'
+            """
+        return f"""
+            SELECT DISTINCT t1.customer_id
+            FROM cohort_base t1
+            INNER JOIN {table} t2
+              ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
+              AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
+              AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+              AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+              AND SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {oc}
+            WHERE t1.cohort_month = '{cohort_month}'
+            """
+
+    return f"""
+    WITH {cte},
+    base_ids AS ({_id_subquery(base_order_count)}),
+    subtract_ids AS ({_id_subquery(subtract_order_count)})
+    SELECT DISTINCT b.customer_id
+    FROM base_ids b
+    WHERE b.customer_id NOT IN (SELECT customer_id FROM subtract_ids)
+    ORDER BY b.customer_id
     """
