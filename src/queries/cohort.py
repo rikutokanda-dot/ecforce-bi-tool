@@ -481,6 +481,7 @@ def build_cohort_customer_ids_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
 ) -> str:
     """コホート月の顧客IDリストを取得するSQL.
 
@@ -492,6 +493,7 @@ def build_cohort_customer_ids_sql(
         date_from=date_from, date_to=date_to,
         product_categories=product_categories,
         ad_groups=ad_groups, product_names=product_names,
+        ad_url_params=ad_url_params,
     )
     cte = _cohort_base_cte(table, filters)
 
@@ -531,6 +533,7 @@ def build_cohort_customer_diff_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
 ) -> str:
     """2つの対象の差分（base - subtract）の顧客IDを取得するSQL.
 
@@ -541,6 +544,7 @@ def build_cohort_customer_diff_sql(
         date_from=date_from, date_to=date_to,
         product_categories=product_categories,
         ad_groups=ad_groups, product_names=product_names,
+        ad_url_params=ad_url_params,
     )
     cte = _cohort_base_cte(table, filters)
 
