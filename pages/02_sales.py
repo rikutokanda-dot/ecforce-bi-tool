@@ -13,6 +13,7 @@ from src.components.download_button import render_download_buttons
 from src.components.filters import render_cohort_filters
 from src.constants import Col
 from src.queries.tier import (
+    build_active_customer_ids_sql,
     build_revenue_proportion_sql,
     build_tier_by_order_count_sql,
     build_tier_sql,
@@ -29,6 +30,8 @@ if not company_key:
 
 date_from = st.session_state.get(SessionKey.DATE_FROM)
 date_to = st.session_state.get(SessionKey.DATE_TO)
+sales_date_from = st.session_state.get(SessionKey.SALES_DATE_FROM)
+sales_date_to = st.session_state.get(SessionKey.SALES_DATE_TO)
 
 with st.sidebar:
     filters = render_cohort_filters(company_key)
@@ -37,6 +40,8 @@ client = get_bigquery_client()
 
 date_from_str = date_from.strftime("%Y-%m-%d") if date_from else None
 date_to_str = date_to.strftime("%Y-%m-%d") if date_to else None
+sales_from_str = sales_date_from.strftime("%Y-%m-%d") if sales_date_from else None
+sales_to_str = sales_date_to.strftime("%Y-%m-%d") if sales_date_to else None
 
 filter_params = dict(
     company_key=company_key,
@@ -46,6 +51,8 @@ filter_params = dict(
     ad_groups=filters["ad_groups"],
     product_names=filters["product_names"],
     ad_url_params=filters.get("ad_url_params"),
+    sales_date_from=sales_from_str,
+    sales_date_to=sales_to_str,
 )
 
 
@@ -291,7 +298,10 @@ with tab_order:
 # 合計タブ
 # =====================================================================
 with tab_total:
-    if not st.button("表示する", key="btn_tier_total", type="primary"):
+    if st.button("表示する", key="btn_tier_total", type="primary"):
+        st.session_state["tier_total_show"] = True
+
+    if not st.session_state.get("tier_total_show"):
         st.info("フィルタを設定して「表示する」を押してください。")
     else:
         try:
@@ -351,6 +361,36 @@ with tab_total:
                     "割合(%)": f"{pct}%",
                 })
             st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
+
+            # --- アクティブ顧客IDダウンロード ---
+            st.markdown("---")
+            st.markdown("##### アクティブ顧客 CSVダウンロード")
+            if st.button("アクティブ顧客IDを取得", key="btn_active_csv"):
+                try:
+                    sql_active = build_active_customer_ids_sql(**filter_params)
+                    df_active = execute_query(client, sql_active)
+                    if df_active.empty:
+                        st.session_state["active_csv_data"] = None
+                        st.session_state["active_csv_count"] = 0
+                    else:
+                        st.session_state["active_csv_data"] = df_active.to_csv(index=False).encode("utf-8-sig")
+                        st.session_state["active_csv_count"] = len(df_active)
+                except Exception as e:
+                    st.error(f"クエリ実行エラー: {e}")
+                    st.session_state.pop("active_csv_data", None)
+
+            if st.session_state.get("active_csv_data") is not None:
+                cnt = st.session_state["active_csv_count"]
+                st.success(f"アクティブ顧客: {cnt:,}人")
+                st.download_button(
+                    label=f"顧客ID CSVダウンロード ({cnt:,}人)",
+                    data=st.session_state["active_csv_data"],
+                    file_name=f"active_customers_{company_key}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            elif st.session_state.get("active_csv_count") == 0 and "active_csv_data" in st.session_state:
+                st.warning("アクティブ顧客が見つかりませんでした。")
 
 
 # =====================================================================

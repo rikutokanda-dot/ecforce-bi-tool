@@ -5,11 +5,6 @@ from __future__ import annotations
 from src.config_loader import get_company_keys
 from src.constants import Col, PROJECT_ID
 
-# ---------------------------------------------------------------------------
-# 広告URL IDの正規化式 (.0 除去で 4879.0 → 4879 に統一)
-# ---------------------------------------------------------------------------
-AD_URL_NORM = f"REGEXP_REPLACE(`{Col.AD_URL}`, r'\\.0$', '')"
-
 
 def get_table_ref(company_key: str) -> str:
     """テーブル参照文字列を生成. ホワイトリスト検証付き."""
@@ -27,7 +22,7 @@ def build_filter_clause(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
-    ad_urls: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
 ) -> str:
     """共通のWHERE句フィルタを構築.
 
@@ -63,10 +58,30 @@ def build_filter_clause(
         )
         clauses.append(f"AND ({conditions})")
 
-    if ad_urls:
+    if ad_url_params:
         conditions = " OR ".join(
-            f"{AD_URL_NORM} = '{u}'" for u in ad_urls
+            f"`{Col.AD_URL_PARAM}` = '{u}'" for u in ad_url_params
         )
         clauses.append(f"AND ({conditions})")
 
+    return "\n      ".join(clauses)
+
+
+def build_sales_date_clause(
+    sales_date_from: str | None = None,
+    sales_date_to: str | None = None,
+    alias: str = "t2",
+) -> str:
+    """受注_売上日時によるフィルタ句を生成.
+
+    Returns:
+        "AND ..." 形式のフィルタ文字列。alias付きでJOINのWHERE側に追加する。
+    """
+    clauses = []
+    prefix = f"{alias}." if alias else ""
+    _sales_ts = f"SAFE_CAST({prefix}`{Col.SALES_DATE}` AS TIMESTAMP)"
+    if sales_date_from:
+        clauses.append(f"AND {_sales_ts} >= '{sales_date_from}'")
+    if sales_date_to:
+        clauses.append(f"AND {_sales_ts} <= '{sales_date_to} 23:59:59'")
     return "\n      ".join(clauses)

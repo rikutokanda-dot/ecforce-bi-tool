@@ -38,7 +38,7 @@ def render_sidebar():
 
         st.divider()
 
-        # 日付範囲（デフォルト: 1年前の先月初日 ～ 先月末日）
+        # デフォルト日付（1年前の先月初日 ～ 先月末日）
         today = date.today()
         first_of_this_month = today.replace(day=1)
         last_month_end = first_of_this_month - timedelta(days=1)
@@ -46,22 +46,67 @@ def render_sidebar():
         default_start = last_month_start.replace(year=last_month_start.year - 1)
         default_end = last_month_end
 
-        col1, col2 = st.columns(2)
-        with col1:
-            start_date = st.date_input(
-                "開始日",
-                value=default_start,
-                key="sidebar_start_date",
-            )
-        with col2:
-            end_date = st.date_input(
-                "終了日",
-                value=default_end,
-                key="sidebar_end_date",
-            )
+        # 定期作成日フィルタ（任意）
+        date_enabled = st.checkbox(
+            "定期作成日でフィルタ",
+            value=st.session_state.get(SessionKey.DATE_ENABLED, True),
+            key="sidebar_date_enabled",
+        )
+        st.session_state[SessionKey.DATE_ENABLED] = date_enabled
 
-        st.session_state[SessionKey.DATE_FROM] = start_date
-        st.session_state[SessionKey.DATE_TO] = end_date
+        if date_enabled:
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input(
+                    "開始日",
+                    value=default_start,
+                    key="sidebar_start_date",
+                )
+            with col2:
+                end_date = st.date_input(
+                    "終了日",
+                    value=default_end,
+                    key="sidebar_end_date",
+                )
+            st.session_state[SessionKey.DATE_FROM] = start_date
+            st.session_state[SessionKey.DATE_TO] = end_date
+        else:
+            st.session_state[SessionKey.DATE_FROM] = None
+            st.session_state[SessionKey.DATE_TO] = None
+
+        st.divider()
+
+        # 売上日フィルタ（任意）
+        sales_enabled = st.checkbox(
+            "売上日でフィルタ",
+            value=st.session_state.get(SessionKey.SALES_DATE_ENABLED, False),
+            key="sidebar_sales_date_enabled",
+        )
+        st.session_state[SessionKey.SALES_DATE_ENABLED] = sales_enabled
+
+        if sales_enabled:
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                sales_start = st.date_input(
+                    "売上日 開始",
+                    value=st.session_state.get(
+                        SessionKey.SALES_DATE_FROM, last_month_start
+                    ),
+                    key="sidebar_sales_start_date",
+                )
+            with sc2:
+                sales_end = st.date_input(
+                    "売上日 終了",
+                    value=st.session_state.get(
+                        SessionKey.SALES_DATE_TO, last_month_end
+                    ),
+                    key="sidebar_sales_end_date",
+                )
+            st.session_state[SessionKey.SALES_DATE_FROM] = sales_start
+            st.session_state[SessionKey.SALES_DATE_TO] = sales_end
+        else:
+            st.session_state[SessionKey.SALES_DATE_FROM] = None
+            st.session_state[SessionKey.SALES_DATE_TO] = None
 
         st.divider()
 

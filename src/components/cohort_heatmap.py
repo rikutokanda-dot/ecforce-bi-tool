@@ -5,16 +5,19 @@ import plotly.graph_objects as go
 import streamlit as st
 
 
-def render_cohort_heatmap(matrix: pd.DataFrame, title: str = "継続率ヒートマップ"):
-    """Plotlyでコホート継続率ヒートマップを描画.
+def render_cohort_heatmap(matrix: pd.DataFrame, title: str = "残存率ヒートマップ"):
+    """Plotlyでコホートヒートマップを描画.
 
     Args:
-        matrix: 行=コホート月, 列="1回目"〜"12回目", 値=継続率(%)
-        title: グラフタイトル
+        matrix: 行=コホート月, 列="1回目"〜"12回目", 値=率(%)
+        title: グラフタイトル（残存率/継続率に応じてcolorbarラベルも変わる）
     """
     if matrix.empty:
         st.info("表示するデータがありません。")
         return
+
+    # タイトルからラベルを自動判定
+    colorbar_label = "残存率(%)" if "残存" in title else "継続率(%)"
 
     # テキストラベル (値%)
     text = matrix.map(lambda v: f"{v:.1f}%" if pd.notna(v) and v > 0 else "")
@@ -33,7 +36,7 @@ def render_cohort_heatmap(matrix: pd.DataFrame, title: str = "継続率ヒート
                 [0.6, "#A7F3D0"],   # 中高: 薄い緑
                 [1.0, "#34D399"],   # 高い: 緑
             ],
-            colorbar=dict(title="継続率(%)"),
+            colorbar=dict(title=colorbar_label),
             zmin=0,
             zmax=100,
             hoverongaps=False,
@@ -53,15 +56,19 @@ def render_cohort_heatmap(matrix: pd.DataFrame, title: str = "継続率ヒート
     st.plotly_chart(fig, use_container_width=True)
 
 
-def render_retention_line_chart(matrix: pd.DataFrame, title: str = "継続率推移"):
-    """コホート月ごとの継続率を折れ線グラフで表示.
+def render_retention_line_chart(matrix: pd.DataFrame, title: str = "残存率推移"):
+    """コホート月ごとの率推移を折れ線グラフで表示.
 
     Args:
-        matrix: 行=コホート月, 列="1回目"〜"12回目", 値=継続率(%)
+        matrix: 行=コホート月, 列="1回目"〜"12回目", 値=率(%)
+        title: グラフタイトル（残存率/継続率に応じてyaxis_titleも変わる）
     """
     if matrix.empty:
         st.info("表示するデータがありません。")
         return
+
+    # タイトルからラベルを自動判定
+    yaxis_label = "残存率 (%)" if "残存" in title else "継続率 (%)"
 
     fig = go.Figure()
     for month in matrix.index:
@@ -80,7 +87,7 @@ def render_retention_line_chart(matrix: pd.DataFrame, title: str = "継続率推
     fig.update_layout(
         title=title,
         xaxis_title="定期回数",
-        yaxis_title="継続率 (%)",
+        yaxis_title=yaxis_label,
         yaxis=dict(range=[0, 105]),
         height=500,
         margin=dict(l=50, r=50, t=60, b=50),

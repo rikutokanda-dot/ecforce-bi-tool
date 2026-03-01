@@ -32,6 +32,7 @@ from src.session import SessionKey, get_selected_company_key
 from src.transforms.cohort_transform import (
     build_1year_ltv_table,
     build_aggregate_table,
+    build_continuation_rate_matrix,
     build_dimension_summary_table,
     build_drilldown_rate_matrices,
     build_drilldown_retention_table,
@@ -948,13 +949,18 @@ with main_tab_monthly:
                 # 商品名1つ選択時のみマスク適用
                 _monthly_pn = filters["product_names"][0] if filters["product_names"] and len(filters["product_names"]) == 1 else None
                 rate_matrix = build_retention_rate_matrix(monthly_df, data_cutoff_date, _monthly_pn)
+                continuation_matrix = build_continuation_rate_matrix(monthly_df, data_cutoff_date, _monthly_pn)
                 retention_table = build_retention_table(monthly_df, data_cutoff_date, _monthly_pn)
 
                 with tab_heatmap:
-                    render_cohort_heatmap(rate_matrix)
+                    render_cohort_heatmap(rate_matrix, title="残存率ヒートマップ")
+                    st.divider()
+                    render_cohort_heatmap(continuation_matrix, title="継続率ヒートマップ")
 
                 with tab_line:
-                    render_retention_line_chart(rate_matrix)
+                    render_retention_line_chart(rate_matrix, title="残存率推移")
+                    st.divider()
+                    render_retention_line_chart(continuation_matrix, title="継続率推移")
 
                 with tab_table:
                     st.dataframe(retention_table, use_container_width=True, hide_index=True)

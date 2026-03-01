@@ -1,16 +1,13 @@
 """コホート分析用SQLクエリビルダー.
 
-GASコードのビジネスロジックを忠実に移植:
 - cohort_base: 受注_定期回数=1 の顧客を月別に集計
-- 論理連番2(再処理)を持つ顧客は除外
-- 論理連番1またはNULL(失敗含む)のデータがある顧客を対象
 - retained_N: shipped & completed の成功数のみカウント
 - 商品切替者除外: 1回目の定期商品名と同じ商品のみ継続としてカウント
 """
 
 from __future__ import annotations
 
-from src.constants import Col, LogicalSeq, MAX_RETENTION_MONTHS, Status
+from src.constants import Col, MAX_RETENTION_MONTHS, Status
 from src.queries.common import build_filter_clause, get_table_ref
 
 # ---------------------------------------------------------------------------
@@ -20,8 +17,16 @@ _TS = f"SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)"
 _TS_T2 = f"SAFE_CAST(t2.`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)"
 _SUB_COUNT = f"SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)"
 _SUB_COUNT_T2 = f"SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)"
-_LOGIC_SEQ = f"SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64)"
+
 _PAY_AMOUNT_T2 = f"SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64)"
+
+# 0回目（受注が立った人）から除外するステータス句
+_COHORT_EXCLUDE = (
+    "AND `{col}` NOT IN ({vals})".format(
+        col=Col.ORDER_STATUS,
+        vals=", ".join(f"'{s}'" for s in Status.COHORT_EXCLUDED_STATUSES),
+    )
+)
 
 
 def build_cohort_sql(
@@ -55,14 +60,12 @@ def build_cohort_sql(
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month
       FROM {table}
       WHERE {_SUB_COUNT} = 1
+      {_COHORT_EXCLUDE}
       {filters}
       GROUP BY customer_id, first_product_name, cohort_month
-      HAVING has_entry_data = 1 AND has_logic_2 = 0
     )
     SELECT
       t1.cohort_month,
@@ -138,16 +141,14 @@ def build_drilldown_sql(
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
         {dim_expr} AS dimension_col,
-        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month
       FROM {table}
       WHERE {_SUB_COUNT} = 1
+      {_COHORT_EXCLUDE}
       {filters}
       AND {dim_not_null}
       {ad_url_param_filter}
       GROUP BY customer_id, first_product_name, dimension_col, cohort_month
-      HAVING has_entry_data = 1 AND has_logic_2 = 0
     )
     SELECT
       t1.dimension_col,
@@ -202,14 +203,12 @@ def build_aggregate_cohort_sql(
     cohort_base AS (
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
-        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name
       FROM {table}
       WHERE {_SUB_COUNT} = 1
+      {_COHORT_EXCLUDE}
       {filters}
       GROUP BY customer_id, first_product_name
-      HAVING has_entry_data = 1 AND has_logic_2 = 0
     )
     SELECT
       COUNT(DISTINCT t1.customer_id) AS total_users,
@@ -460,14 +459,12 @@ def _cohort_base_cte(table: str, filters: str) -> str:
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
-        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+        FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month
       FROM {table}
       WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+      {_COHORT_EXCLUDE}
       {filters}
       GROUP BY customer_id, first_product_name, cohort_month
-      HAVING has_entry_data = 1 AND has_logic_2 = 0
     )
     """
 

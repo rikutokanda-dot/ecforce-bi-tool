@@ -112,6 +112,79 @@ def build_retention_rate_matrix(
     return matrix
 
 
+def build_continuation_rate_matrix(
+    df: pd.DataFrame,
+    data_cutoff_date: date | None = None,
+    product_name: str | None = None,
+) -> pd.DataFrame:
+    """ヒートマップ用の継続率マトリクス (行=月, 列=回数, 値=%).
+
+    継続率 = retained_N / retained_{N-1} * 100
+    1回目は retained_1 / total_users * 100。
+
+    data_cutoff_date と product_name が指定されている場合、
+    不完全データのセルを None にする。
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    # 各コホート月のマスク上限を計算
+    month_max_count = {}
+    if data_cutoff_date is not None and product_name is not None:
+        for cm in df["cohort_month"]:
+            if cm not in month_max_count:
+                month_max_count[cm] = compute_month_end_mask(cm, product_name, data_cutoff_date)
+
+    matrix = pd.DataFrame(index=df["cohort_month"])
+    total = df["total_users"].astype(float).values
+    prev_retained = total.copy()
+
+    for i in range(1, MAX_RETENTION_MONTHS + 1):
+        col = f"retained_{i}"
+        if col not in df.columns:
+            break
+        retained = pd.to_numeric(df[col], errors="coerce").fillna(0).values
+
+        # 継続率: retained_i / prev_retained * 100
+        with pd.option_context("mode.use_inf_as_na", True):
+            rates = []
+            for idx in range(len(retained)):
+                if prev_retained[idx] > 0:
+                    rates.append(round(retained[idx] / prev_retained[idx] * 100, 1))
+                else:
+                    rates.append(0.0)
+
+        # マスク適用
+        if month_max_count:
+            for idx, cm in enumerate(df["cohort_month"]):
+                max_n = month_max_count.get(cm, MAX_RETENTION_MONTHS)
+                if i > max_n:
+                    rates[idx] = None
+            matrix[f"{i}回目"] = rates
+        else:
+            matrix[f"{i}回目"] = rates
+
+        # 次の回のために prev_retained を更新
+        prev_retained = retained.copy()
+
+    matrix.index.name = "コホート月"
+    return matrix
+
+
+def build_drilldown_continuation_matrices(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """ドリルダウン結果をグループごとの継続率マトリクスに変換."""
+    if df.empty:
+        return {}
+
+    result = {}
+    for group_name, group_df in df.groupby("dimension_col"):
+        group_df = group_df.reset_index(drop=True)
+        matrix = build_continuation_rate_matrix(group_df)
+        result[str(group_name)] = matrix
+
+    return result
+
+
 def build_drilldown_retention_table(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """ドリルダウン結果をグループごとの継続率テーブルに変換."""
     if df.empty:
@@ -456,9 +529,9 @@ def build_product_summary_table(
             continuation_rate = round(retained / prev_retained * 100, 1) if prev_retained > 0 else 0.0
 
         label = f"{i}回目"
-        continuation_row[label] = f"{int(retained)}/{int(prev_retained)} ({continuation_rate}%)"
-        survival_row[label] = f"{int(retained)}/{int(eligible_total)} ({survival_rate}%)"
-        count_row[label] = f"{int(retained)}件"
+        continuation_row[label] = f"{continuation_rate}%\n({int(retained):,}/{int(prev_retained):,})"
+        survival_row[label] = f"{survival_rate}%\n({int(retained):,}/{int(eligible_total):,})"
+        count_row[label] = f"{int(retained):,}件"
 
     if len(continuation_row) <= 1:
         return pd.DataFrame()
@@ -510,9 +583,9 @@ def build_dimension_summary_table(
             continuation_rate = round(retained / prev_retained * 100, 1) if prev_retained > 0 else 0.0
 
         label = f"{i}回目"
-        continuation_row[label] = f"{int(retained)}/{int(prev_retained)} ({continuation_rate}%)"
-        survival_row[label] = f"{int(retained)}/{int(total_users)} ({survival_rate}%)"
-        count_row[label] = f"{int(retained)}件"
+        continuation_row[label] = f"{continuation_rate}%\n({int(retained):,}/{int(prev_retained):,})"
+        survival_row[label] = f"{survival_rate}%\n({int(retained):,}/{int(total_users):,})"
+        count_row[label] = f"{int(retained):,}件"
 
     return pd.DataFrame([continuation_row, survival_row, count_row])
 

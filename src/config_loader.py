@@ -6,9 +6,7 @@ Cloud Run上ではGCSバケットに保存・読み込みし、
 
 from __future__ import annotations
 
-import io
 import os
-import re
 from pathlib import Path
 
 import streamlit as st
@@ -17,7 +15,7 @@ import yaml
 CONFIG_DIR = Path(__file__).parent.parent / "config"
 PRODUCT_CYCLES_FILE = CONFIG_DIR / "product_cycles.yaml"
 UPSELL_MAPPING_FILE = CONFIG_DIR / "upsell_mapping.yaml"
-AD_URL_MAPPING_FILE = CONFIG_DIR / "ad_url_mapping.yaml"
+TIER_BOUNDARIES_FILE = CONFIG_DIR / "tier_boundaries.yaml"
 
 # GCS設定
 GCS_BUCKET = os.environ.get("CONFIG_GCS_BUCKET", "ecforce-bi-config")
@@ -28,6 +26,7 @@ GCS_PREFIX = "config/"
 # GCS読み書きヘルパー
 # =====================================================================
 
+@st.cache_resource
 def _get_gcs_client():
     """GCSクライアントを取得。失敗時はNone。"""
     try:
@@ -115,6 +114,7 @@ def get_company_keys() -> set[str]:
 # =====================================================================
 
 
+@st.cache_data(ttl=300)
 def load_product_cycles() -> dict:
     """商品名別の発送サイクル設定を読み込む.
 
@@ -149,6 +149,7 @@ def save_product_cycles(data: dict) -> None:
 # =====================================================================
 
 
+@st.cache_data(ttl=300)
 def load_upsell_mappings() -> list[dict]:
     """アップセルマッピングを読み込む.
 
@@ -199,60 +200,27 @@ def get_upsell_targets(product_name: str) -> list[dict]:
 
 
 # =====================================================================
-# 広告URL IDマッピング
+# Tier境界値マスタ
 # =====================================================================
 
-
-def _normalize_ad_url_id(aid: str) -> str:
-    """広告URL IDの .0 サフィックスを除去して正規化."""
-    return re.sub(r"\.0$", "", aid) if aid else aid
-
-
-def load_ad_url_mappings() -> list[dict]:
-    """広告URL IDマッピングを読み込む（.0を自動除去・重複統合）.
-
-    Returns:
-        [{"ad_url_id": "xxx", "ad_url_name": "表示名"}, ...]
-    """
-    data = _read_yaml("ad_url_mapping.yaml", AD_URL_MAPPING_FILE)
-    raw = data.get("mappings", [])
-
-    # .0 を除去して重複統合（名前があるほうを優先）
-    seen: dict[str, dict] = {}
-    for m in raw:
-        aid = _normalize_ad_url_id(m.get("ad_url_id", ""))
-        if not aid:
-            continue
-        name = m.get("ad_url_name", "")
-        if aid in seen:
-            # 既にあるエントリに名前がなければ上書き
-            if name and not seen[aid].get("ad_url_name"):
-                seen[aid]["ad_url_name"] = name
-        else:
-            seen[aid] = {"ad_url_id": aid, "ad_url_name": name}
-    return list(seen.values())
+_DEFAULT_TIER_BOUNDARIES = [
+    5000, 10000, 20000, 30000, 40000, 50000,
+    60000, 70000, 80000, 90000, 100000,
+]
 
 
-def save_ad_url_mappings(mappings: list[dict]) -> None:
-    """広告URL IDマッピングをYAMLに保存（.0を自動除去）."""
-    clean = []
-    seen: set[str] = set()
-    for m in mappings:
-        aid = _normalize_ad_url_id(m.get("ad_url_id", ""))
-        if not aid or aid in seen:
-            continue
-        seen.add(aid)
-        clean.append({"ad_url_id": aid, "ad_url_name": m.get("ad_url_name", "")})
-    _write_yaml("ad_url_mapping.yaml", AD_URL_MAPPING_FILE, {"mappings": clean})
+@st.cache_data(ttl=300)
+def load_tier_boundaries() -> list[int]:
+    """Tier境界値を読み込む。未設定ならデフォルト値を返す."""
+    data = _read_yaml("tier_boundaries.yaml", TIER_BOUNDARIES_FILE)
+    boundaries = data.get("boundaries", _DEFAULT_TIER_BOUNDARIES)
+    return sorted(int(b) for b in boundaries)
 
 
-def get_ad_url_display_map() -> dict[str, str]:
-    """広告URL ID → 表示名 の辞書を返す.
-
-    名前が空または未定義の場合はキーを含めない（呼び出し側でID表示にフォールバック）。
-    """
-    return {
-        m["ad_url_id"]: m["ad_url_name"]
-        for m in load_ad_url_mappings()
-        if m.get("ad_url_id") and m.get("ad_url_name")
-    }
+def save_tier_boundaries(boundaries: list[int]) -> None:
+    """Tier境界値をYAMLに保存."""
+    _write_yaml(
+        "tier_boundaries.yaml",
+        TIER_BOUNDARIES_FILE,
+        {"boundaries": sorted(boundaries)},
+    )

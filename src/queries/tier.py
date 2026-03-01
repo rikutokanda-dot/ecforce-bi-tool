@@ -7,12 +7,12 @@
 from __future__ import annotations
 
 from src.config_loader import load_tier_boundaries
-from src.constants import Col, LogicalSeq, Status
-from src.queries.common import build_filter_clause, get_table_ref
+from src.constants import Col, Status
+from src.queries.common import build_filter_clause, build_sales_date_clause, get_table_ref
 
 # STRING型カラムの安全なCAST式
 _SUB_COUNT = f"SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)"
-_LOGIC_SEQ = f"SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64)"
+
 _PAY_AMOUNT = f"SAFE_CAST(`{Col.PAYMENT_AMOUNT}` AS FLOAT64)"
 _TS = f"SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)"
 _SALES_TS = f"SAFE_CAST(`{Col.SALES_DATE}` AS TIMESTAMP)"
@@ -55,6 +55,8 @@ def build_tier_sql(
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
     ad_url_params: list[str] | None = None,
+    sales_date_from: str | None = None,
+    sales_date_to: str | None = None,
 ) -> str:
     """Tier分析SQL.
 
@@ -72,6 +74,7 @@ def build_tier_sql(
         product_names=product_names,
         ad_url_params=ad_url_params,
     )
+    sales_filter = build_sales_date_clause(sales_date_from, sales_date_to)
 
     tier_case = _tier_case_expr()
     tier_order = _tier_order_expr()
@@ -79,16 +82,11 @@ def build_tier_sql(
     return f"""
     WITH
     cohort_base AS (
-      SELECT
-        `{Col.CUSTOMER_ID}` AS customer_id,
-        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+      SELECT DISTINCT
+        `{Col.CUSTOMER_ID}` AS customer_id
       FROM {table}
       WHERE {_SUB_COUNT} = 1
       {filters}
-      GROUP BY customer_id, first_product_name
-      HAVING has_entry_data = 1 AND has_logic_2 = 0
     ),
     -- 顧客ごとの通算LTV (shipped&completedの累計)
     customer_ltv AS (
@@ -102,7 +100,8 @@ def build_tier_sql(
       FROM cohort_base AS t1
       LEFT JOIN {table} AS t2
         ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
-        AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
+      WHERE 1=1
+        {sales_filter}
       GROUP BY t1.customer_id
     ),
     -- 顧客の定期ステータス（最新）
@@ -119,7 +118,6 @@ def build_tier_sql(
       FROM cohort_base AS t1
       LEFT JOIN {table} AS t2
         ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
-        AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
       GROUP BY t1.customer_id
     ),
     -- Tier振り分け
@@ -152,6 +150,8 @@ def build_tier_by_order_count_sql(
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
     ad_url_params: list[str] | None = None,
+    sales_date_from: str | None = None,
+    sales_date_to: str | None = None,
 ) -> str:
     """定期回数別Tier分析SQL.
 
@@ -164,6 +164,7 @@ def build_tier_by_order_count_sql(
         product_categories=product_categories, ad_groups=ad_groups,
         product_names=product_names, ad_url_params=ad_url_params,
     )
+    sales_filter = build_sales_date_clause(sales_date_from, sales_date_to)
     boundaries = _get_tier_boundaries()
     tier_case = _tier_case_expr(boundaries)
     tier_order = _tier_order_expr(boundaries)
@@ -171,16 +172,11 @@ def build_tier_by_order_count_sql(
     return f"""
     WITH
     cohort_base AS (
-      SELECT
-        `{Col.CUSTOMER_ID}` AS customer_id,
-        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+      SELECT DISTINCT
+        `{Col.CUSTOMER_ID}` AS customer_id
       FROM {table}
       WHERE {_SUB_COUNT} = 1
       {filters}
-      GROUP BY customer_id, first_product_name
-      HAVING has_entry_data = 1 AND has_logic_2 = 0
     ),
     customer_ltv AS (
       SELECT
@@ -199,7 +195,8 @@ def build_tier_by_order_count_sql(
       FROM cohort_base AS t1
       LEFT JOIN {table} AS t2
         ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
-        AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
+      WHERE 1=1
+        {sales_filter}
       GROUP BY t1.customer_id
     ),
     tiered AS (
@@ -218,6 +215,55 @@ def build_tier_by_order_count_sql(
     FROM tiered
     GROUP BY tier_label, tier_sort, order_count
     ORDER BY tier_sort, order_count
+    """
+
+
+def build_active_customer_ids_sql(
+    company_key: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    product_categories: list[str] | None = None,
+    ad_groups: list[str] | None = None,
+    product_names: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
+    sales_date_from: str | None = None,
+    sales_date_to: str | None = None,
+) -> str:
+    """アクティブ顧客の顧客IDリスト取得SQL."""
+    table = get_table_ref(company_key)
+    filters = build_filter_clause(
+        date_from=date_from, date_to=date_to,
+        product_categories=product_categories, ad_groups=ad_groups,
+        product_names=product_names, ad_url_params=ad_url_params,
+    )
+
+    return f"""
+    WITH
+    cohort_base AS (
+      SELECT DISTINCT
+        `{Col.CUSTOMER_ID}` AS customer_id
+      FROM {table}
+      WHERE {_SUB_COUNT} = 1
+      {filters}
+    ),
+    customer_status AS (
+      SELECT
+        t1.customer_id,
+        ARRAY_AGG(
+          t2.`{Col.SUBSCRIPTION_STATUS}`
+          IGNORE NULLS
+          ORDER BY SAFE_CAST(t2.`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP) DESC
+          LIMIT 1
+        )[SAFE_OFFSET(0)] AS subscription_status
+      FROM cohort_base AS t1
+      LEFT JOIN {table} AS t2
+        ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
+      GROUP BY t1.customer_id
+    )
+    SELECT customer_id
+    FROM customer_status
+    WHERE LOWER(subscription_status) = 'active'
+    ORDER BY customer_id
     """
 
 
@@ -265,16 +311,11 @@ def build_revenue_proportion_sql(
     return f"""
     WITH
     cohort_base AS (
-      SELECT
-        `{Col.CUSTOMER_ID}` AS customer_id,
-        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
-        MAX(IF({_LOGIC_SEQ} = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+      SELECT DISTINCT
+        `{Col.CUSTOMER_ID}` AS customer_id
       FROM {table}
       WHERE {_SUB_COUNT} = 1
       {cohort_filters}
-      GROUP BY customer_id, first_product_name
-      HAVING has_entry_data = 1 AND has_logic_2 = 0
     )
     SELECT
       {group_expr} AS group_value,
@@ -287,7 +328,6 @@ def build_revenue_proportion_sql(
     FROM cohort_base AS t1
     LEFT JOIN {table} AS t2
       ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
-      AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
     WHERE {group_expr} IS NOT NULL AND {group_expr} != ''
       AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
       AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
