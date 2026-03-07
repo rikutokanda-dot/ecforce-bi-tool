@@ -226,6 +226,7 @@ pg = st.navigation(
             st.Page("pages/02_sales.py", title="顧客分析", icon=":material/trending_up:"),
             st.Page("pages/03_ad_performance.py", title="広告効果", icon=":material/campaign:"),
             st.Page("pages/04_churn.py", title="解約分析", icon=":material/person_remove:"),
+            st.Page("pages/06_chirashi.py", title="チラシ分析", icon=":material/local_offer:"),
         ],
         "設定": [
             st.Page("pages/05_master.py", title="マスタ管理", icon=":material/settings:"),

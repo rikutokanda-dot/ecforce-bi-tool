@@ -15,7 +15,10 @@ def get_bigquery_client() -> bigquery.Client:
     """BigQueryクライアントのシングルトン生成."""
     credentials = service_account.Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
-        scopes=["https://www.googleapis.com/auth/bigquery"],
+        scopes=[
+            "https://www.googleapis.com/auth/bigquery",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ],
     )
     return bigquery.Client(
         credentials=credentials,
