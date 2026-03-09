@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from src.bigquery_client import execute_query, get_bigquery_client
-from src.config_loader import load_product_cycles
+from src.config_loader import load_product_cycles, save_product_cycles
 from src.queries.chirashi import (
     build_chirashi_config_sql,
     build_chirashi_frequency_rate_sql,
@@ -309,7 +309,7 @@ with tab_retention:
         "※ 切替回数より前の継続率は定義上100%（例: 3回目切替 → 1〜3回目は100%）"
     )
 
-    # ----- 商品マスタ未登録の警告 -----
+    # ----- 商品マスタ未登録 → 自動追加 + 周期未設定の警告 -----
     try:
         unmatched_sql = build_chirashi_unmatched_products_sql(
             company_key, chirashi_filter,
@@ -320,13 +320,28 @@ with tab_retention:
         unmatched_df = pd.DataFrame()
 
     if not unmatched_df.empty:
-        product_list = "\n".join(
-            f"- {row['switched_product_name']}（{int(row['customer_count']):,}人）"
-            for _, row in unmatched_df.iterrows()
-        )
+        # 未登録商品をマスタに自動追加（cycle1=0, cycle2=0 = 未設定）
+        new_names = unmatched_df["switched_product_name"].tolist()
+        existing_names = {p["name"] for p in pc_data.get("products", [])}
+        added = []
+        for name in new_names:
+            if name not in existing_names:
+                pc_data["products"].append({"name": name, "cycle1": 0, "cycle2": 0})
+                added.append(name)
+        if added:
+            save_product_cycles(pc_data)
+            st.cache_data.clear()
+
+    # cycle2=0（未設定）の商品を警告
+    unconfigured = [
+        p["name"] for p in pc_data.get("products", [])
+        if not p.get("cycle2") or p.get("cycle2", 0) <= 0
+    ]
+    if unconfigured:
+        product_list = "\n".join(f"- {name}" for name in unconfigured)
         st.warning(
-            "以下の切替先商品が商品マスタ（商品サイクル設定）に未登録です。\n"
-            "デフォルト周期（30日）で計算されるため、継続率の精度が低下します。\n"
+            "以下の商品の発送周期が未設定です。\n"
+            "周期が未設定の商品は実績ベースの計算となり、正確なeligible判定ができません。\n"
             "**マスタ管理ページで周期を設定してください。**\n\n"
             f"{product_list}"
         )

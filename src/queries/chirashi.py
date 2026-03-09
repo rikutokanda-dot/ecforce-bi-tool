@@ -221,11 +221,10 @@ def _product_cycles_cte(product_cycles: dict | None) -> tuple[str, int]:
     rows = []
     for p in products:
         name = p["name"].replace("'", "''")
-        c2 = p.get("cycle2", dc2)
-        if c2 and c2 > 0:
-            rows.append(
-                f"STRUCT('{name}' AS name, {c2} AS cycle2)"
-            )
+        c2 = p.get("cycle2", 0) or 0
+        rows.append(
+            f"STRUCT('{name}' AS name, {c2} AS cycle2)"
+        )
     if not rows:
         return "", dc2
 
@@ -297,7 +296,7 @@ SELECT
   COUNT(DISTINCT sp.customer_id) AS customer_count
 FROM switched_products sp
 LEFT JOIN product_cycles pc
-  ON STRPOS(sp.switched_product_name, pc.name) > 0
+  ON sp.switched_product_name = pc.name
 WHERE pc.name IS NULL
 GROUP BY 1
 ORDER BY 2 DESC
@@ -432,26 +431,25 @@ switched_max AS (
 with_eligible AS (
   SELECT
     sm.*,
-    -- 切替日からの経過日数 ÷ 商品マスタcycle2 で到達可能回数を算出
-    -- 実績(max_shipped)と計算値の大きい方を採用（実際に届いた人は確実にeligible）
-    GREATEST(
-      sm.max_shipped,
-      sm.switch_order_count + CAST(
-        FLOOR(
-          SAFE_DIVIDE(
-            DATE_DIFF(CURRENT_DATE(), DATE(sm.switch_date), DAY),
-            GREATEST(COALESCE(pc.cycle2, {default_cycle2}), 1)
-          )
-        ) AS INT64
+    -- cycle2>0: 切替日からの経過日数÷cycle2で到達可能回数を算出（実績とのMAX）
+    -- cycle2=0またはマスタ未登録: 実績(max_shipped)のみ使用
+    CASE
+      WHEN COALESCE(pc.cycle2, 0) > 0 THEN GREATEST(
+        sm.max_shipped,
+        sm.switch_order_count + CAST(
+          FLOOR(
+            SAFE_DIVIDE(
+              DATE_DIFF(CURRENT_DATE(), DATE(sm.switch_date), DAY),
+              pc.cycle2
+            )
+          ) AS INT64
+        )
       )
-    ) AS expected_max
+      ELSE sm.max_shipped
+    END AS expected_max
   FROM switched_max sm
   LEFT JOIN product_cycles pc
-    ON STRPOS(sm.switched_product_name, pc.name) > 0
-  QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY sm.chirashi_name, sm.customer_id
-    ORDER BY LENGTH(pc.name) DESC
-  ) = 1
+    ON sm.switched_product_name = pc.name
 )
 
 SELECT
