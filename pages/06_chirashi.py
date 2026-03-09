@@ -132,9 +132,9 @@ if not company_key:
 
 client = get_bigquery_client()
 
-# サイドバーの売上日フィルタを取得
-sales_date_from = st.session_state.get(SessionKey.SALES_DATE_FROM)
-sales_date_to = st.session_state.get(SessionKey.SALES_DATE_TO)
+# サイドバーの受注日フィルタを取得
+order_date_from = st.session_state.get(SessionKey.ORDER_DATE_FROM)
+order_date_to = st.session_state.get(SessionKey.ORDER_DATE_TO)
 
 # ---------------------------------------------------------------------------
 # ターゲット商品設定の表示
@@ -166,7 +166,7 @@ with tab_upsell:
     )
 
     try:
-        sql = build_chirashi_upsell_rate_sql(company_key, sales_date_from, sales_date_to)
+        sql = build_chirashi_upsell_rate_sql(company_key, order_date_from, order_date_to)
         df = execute_query(client, sql)
     except Exception as e:
         st.error(f"クエリ実行エラー: {e}")
@@ -224,7 +224,7 @@ with tab_upsell:
 
     try:
         freq_sql = build_chirashi_frequency_rate_sql(
-            company_key, sales_date_from, sales_date_to
+            company_key, order_date_from, order_date_to
         )
         freq_df = execute_query(client, freq_sql)
     except Exception as e:
@@ -279,7 +279,7 @@ with tab_retention:
 
     try:
         ret_sql = build_chirashi_retention_sql(
-            company_key, chirashi_filter, max_n, sales_date_from, sales_date_to
+            company_key, chirashi_filter, max_n, order_date_from, order_date_to
         )
         ret_df = execute_query(client, ret_sql)
     except Exception as e:

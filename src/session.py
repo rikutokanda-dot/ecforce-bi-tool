@@ -16,6 +16,9 @@ class SessionKey:
     SALES_DATE_FROM = "sales_date_from"
     SALES_DATE_TO = "sales_date_to"
     AUTHENTICATED = "authenticated"
+    ORDER_DATE_ENABLED = "order_date_enabled"
+    ORDER_DATE_FROM = "order_date_from"
+    ORDER_DATE_TO = "order_date_to"
     # 永続フィルタ（ページ遷移時も保持）
     FILTER_CATEGORIES = "persist_filter_categories"
     FILTER_AD_GROUPS = "persist_filter_ad_groups"

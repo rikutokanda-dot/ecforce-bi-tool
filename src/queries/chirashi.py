@@ -40,16 +40,15 @@ def _date_filter(
     date_to: date | None = None,
     alias: str = "a",
 ) -> str:
-    """受注売上日の日付フィルタ句を生成."""
+    """受注日（受注_作成日時_yyyymmdd）の日付フィルタ句を生成."""
     parts = []
     if date_from:
         parts.append(
-            f"SAFE_CAST({alias}.`{Col.SALES_DATE}` AS TIMESTAMP) >= '{date_from}'"
+            f"{alias}.`{Col.ORDER_CREATED_DATE}` >= '{date_from:%Y%m%d}'"
         )
     if date_to:
-        next_day = date_to + timedelta(days=1)
         parts.append(
-            f"SAFE_CAST({alias}.`{Col.SALES_DATE}` AS TIMESTAMP) < '{next_day}'"
+            f"{alias}.`{Col.ORDER_CREATED_DATE}` <= '{date_to:%Y%m%d}'"
         )
     return ("\n    AND " + "\n    AND ".join(parts)) if parts else ""
 

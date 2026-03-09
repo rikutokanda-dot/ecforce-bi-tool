@@ -110,6 +110,40 @@ def render_sidebar():
 
         st.divider()
 
+        # 受注日フィルタ（任意）
+        order_enabled = st.checkbox(
+            "受注日でフィルタ",
+            value=st.session_state.get(SessionKey.ORDER_DATE_ENABLED, False),
+            key="sidebar_order_date_enabled",
+        )
+        st.session_state[SessionKey.ORDER_DATE_ENABLED] = order_enabled
+
+        if order_enabled:
+            oc1, oc2 = st.columns(2)
+            with oc1:
+                order_start = st.date_input(
+                    "受注日 開始",
+                    value=st.session_state.get(
+                        SessionKey.ORDER_DATE_FROM, last_month_start
+                    ),
+                    key="sidebar_order_start_date",
+                )
+            with oc2:
+                order_end = st.date_input(
+                    "受注日 終了",
+                    value=st.session_state.get(
+                        SessionKey.ORDER_DATE_TO, last_month_end
+                    ),
+                    key="sidebar_order_end_date",
+                )
+            st.session_state[SessionKey.ORDER_DATE_FROM] = order_start
+            st.session_state[SessionKey.ORDER_DATE_TO] = order_end
+        else:
+            st.session_state[SessionKey.ORDER_DATE_FROM] = None
+            st.session_state[SessionKey.ORDER_DATE_TO] = None
+
+        st.divider()
+
         # キャッシュクリア
         if st.button("データ更新", use_container_width=True):
             st.cache_data.clear()
