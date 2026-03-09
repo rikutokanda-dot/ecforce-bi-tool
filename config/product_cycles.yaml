@@ -626,6 +626,15 @@ products:
 - name: カンシャ【180日間全額返金保証・定期コース】_IMQR
   cycle1: 30
   cycle2: 30
+- name: テアテプラスPotenza錠0【240日全額返金保証・永久1000円オフ定期コース】_SH_FRYUSL
+  cycle1: 120
+  cycle2: 120
+- name: テアテプラスPotenza錠0【240日全額返金保証・永久1000円オフ定期コース】_FRYUSL
+  cycle1: 120
+  cycle2: 120
+- name: 肝要マキシム習慣肝要マキシム【180日間全額返金保証・定期コース_chg】_FRY
+  cycle1: 15
+  cycle2: 30
 defaults:
   cycle1: 30
   cycle2: 30
