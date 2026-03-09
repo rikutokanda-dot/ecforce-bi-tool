@@ -220,7 +220,7 @@ def _product_cycles_cte(product_cycles: dict | None) -> tuple[str, int]:
 
     rows = []
     for p in products:
-        name = p["name"].replace("'", "\\'")
+        name = p["name"].replace("'", "''")
         c2 = p.get("cycle2", dc2)
         if c2 and c2 > 0:
             rows.append(
@@ -374,7 +374,11 @@ with_eligible AS (
     ) AS expected_max
   FROM switched_max sm
   LEFT JOIN product_cycles pc
-    ON sm.switched_product_name = pc.name
+    ON STRPOS(sm.switched_product_name, pc.name) > 0
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY sm.chirashi_name, sm.customer_id
+    ORDER BY LENGTH(pc.name) DESC
+  ) = 1
 )
 
 SELECT
