@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from src.bigquery_client import execute_query, get_bigquery_client
+from src.config_loader import load_product_cycles
 from src.queries.chirashi import (
     build_chirashi_config_sql,
     build_chirashi_frequency_rate_sql,
@@ -281,8 +282,10 @@ with tab_retention:
     max_n = st.slider("最大定期回数", min_value=6, max_value=24, value=12, key="chirashi_max_n")
 
     try:
+        pc_data = load_product_cycles()
         ret_sql = build_chirashi_retention_sql(
-            company_key, chirashi_filter, max_n, order_date_from, order_date_to
+            company_key, chirashi_filter, max_n,
+            order_date_from, order_date_to, pc_data,
         )
         ret_df = execute_query(client, ret_sql)
     except Exception as e:

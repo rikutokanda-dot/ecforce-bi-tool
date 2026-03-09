@@ -202,12 +202,46 @@ ORDER BY 1, 2
 """
 
 
+def _product_cycles_cte(product_cycles: dict | None) -> tuple[str, int]:
+    """商品サイクルマスタをSQL CTEとして生成.
+
+    Returns:
+        (CTE SQL文字列, デフォルトcycle2)
+    """
+    if not product_cycles:
+        return "", 30
+
+    products = product_cycles.get("products", [])
+    defaults = product_cycles.get("defaults", {})
+    dc2 = defaults.get("cycle2", 30)
+
+    if not products:
+        return "", dc2
+
+    rows = []
+    for p in products:
+        name = p["name"].replace("'", "\\'")
+        c2 = p.get("cycle2", dc2)
+        if c2 and c2 > 0:
+            rows.append(
+                f"STRUCT('{name}' AS name, {c2} AS cycle2)"
+            )
+    if not rows:
+        return "", dc2
+
+    cte = "product_cycles AS (\n  SELECT * FROM UNNEST([\n    "
+    cte += ",\n    ".join(rows)
+    cte += "\n  ])\n)"
+    return cte, dc2
+
+
 def build_chirashi_retention_sql(
     company_key: str,
     chirashi_name: str | None = None,
     max_n: int = 24,
     date_from: date | None = None,
     date_to: date | None = None,
+    product_cycles: dict | None = None,
 ) -> str:
     """切り替えタイミング別継続率を算出するSQL.
 
@@ -217,10 +251,16 @@ def build_chirashi_retention_sql(
 
     3回目で切り替えた人 → 1〜3回目は自動的に100%
 
+    eligible判定は商品マスタのcycle2を使用:
+      expected_max = switch_order_count + FLOOR(days_since_switch / cycle2)
+
     Args:
         company_key: 会社キー
         chirashi_name: フィルタするチラシ名（Noneなら全チラシ）
         max_n: 最大定期回数
+        date_from: 受注日フィルタ開始
+        date_to: 受注日フィルタ終了
+        product_cycles: 商品サイクルマスタ (load_product_cycles()の戻り値)
 
     Returns:
         SQL文字列。結果カラム:
@@ -234,6 +274,8 @@ def build_chirashi_retention_sql(
     chirashi_filter = ""
     if chirashi_name:
         chirashi_filter = f"AND c.chirashi_name = '{chirashi_name}'"
+
+    pc_cte, default_cycle2 = _product_cycles_cte(product_cycles)
 
     retained_parts = []
     for i in range(1, max_n + 1):
@@ -255,8 +297,11 @@ def build_chirashi_retention_sql(
             )
     retained_cols = ",\n    ".join(retained_parts)
 
+    # product_cycles CTE がある場合は先頭に追加
+    pc_prefix = f"{pc_cte},\n\n" if pc_cte else ""
+
     return f"""
-WITH chirashi_recipients AS (
+WITH {pc_prefix}chirashi_recipients AS (
   SELECT
     c.chirashi_name,
     a.`{Col.CUSTOMER_ID}` AS customer_id,
@@ -298,8 +343,16 @@ switched_max AS (
     s.customer_id,
     s.switch_order_count,
     MAX(SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)) AS max_shipped,
-    MIN(SAFE_CAST(a.`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS sub_created,
-    MAX(SAFE_CAST(a.`{Col.SALES_DATE}` AS TIMESTAMP)) AS last_order_date
+    -- 切替回の売上日（切替時点を基準にeligible判定する）
+    MIN(CASE
+      WHEN SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = s.switch_order_count
+      THEN SAFE_CAST(a.`{Col.SALES_DATE}` AS TIMESTAMP)
+    END) AS switch_date,
+    -- 切替後の定期商品名（商品マスタのcycle2を引くため）
+    ANY_VALUE(CASE
+      WHEN SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = s.switch_order_count
+      THEN a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`
+    END) AS switched_product_name
   FROM switched_with_timing s
   JOIN {integrated} a
     ON s.customer_id = a.`{Col.CUSTOMER_ID}`
@@ -309,22 +362,19 @@ switched_max AS (
 
 with_eligible AS (
   SELECT
-    *,
-    CAST(
+    sm.*,
+    -- 切替日からの経過日数 ÷ 商品マスタcycle2 で到達可能回数を算出
+    sm.switch_order_count + CAST(
       FLOOR(
         SAFE_DIVIDE(
-          DATE_DIFF(CURRENT_DATE(), DATE(sub_created), DAY),
-          GREATEST(
-            SAFE_DIVIDE(
-              DATE_DIFF(DATE(last_order_date), DATE(sub_created), DAY),
-              GREATEST(max_shipped - 1, 1)
-            ),
-            1
-          )
+          DATE_DIFF(CURRENT_DATE(), DATE(sm.switch_date), DAY),
+          GREATEST(COALESCE(pc.cycle2, {default_cycle2}), 1)
         )
-      ) + 1 AS INT64
+      ) AS INT64
     ) AS expected_max
-  FROM switched_max
+  FROM switched_max sm
+  LEFT JOIN product_cycles pc
+    ON sm.switched_product_name = pc.name
 )
 
 SELECT
