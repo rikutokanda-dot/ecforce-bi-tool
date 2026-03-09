@@ -433,13 +433,17 @@ with_eligible AS (
   SELECT
     sm.*,
     -- 切替日からの経過日数 ÷ 商品マスタcycle2 で到達可能回数を算出
-    sm.switch_order_count + CAST(
-      FLOOR(
-        SAFE_DIVIDE(
-          DATE_DIFF(CURRENT_DATE(), DATE(sm.switch_date), DAY),
-          GREATEST(COALESCE(pc.cycle2, {default_cycle2}), 1)
-        )
-      ) AS INT64
+    -- 実績(max_shipped)と計算値の大きい方を採用（実際に届いた人は確実にeligible）
+    GREATEST(
+      sm.max_shipped,
+      sm.switch_order_count + CAST(
+        FLOOR(
+          SAFE_DIVIDE(
+            DATE_DIFF(CURRENT_DATE(), DATE(sm.switch_date), DAY),
+            GREATEST(COALESCE(pc.cycle2, {default_cycle2}), 1)
+          )
+        ) AS INT64
+      )
     ) AS expected_max
   FROM switched_max sm
   LEFT JOIN product_cycles pc
