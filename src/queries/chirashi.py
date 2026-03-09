@@ -235,6 +235,75 @@ def _product_cycles_cte(product_cycles: dict | None) -> tuple[str, int]:
     return cte, dc2
 
 
+def build_chirashi_unmatched_products_sql(
+    company_key: str,
+    chirashi_name: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    product_cycles: dict | None = None,
+) -> str:
+    """商品マスタに未登録の切替先商品名を検出するSQL.
+
+    Returns:
+        SQL文字列。結果カラム: switched_product_name, customer_count
+    """
+    chirashi = _chirashi_ref(company_key)
+    config = _config_ref(company_key)
+    integrated = _integrated_ref(company_key)
+    df = _date_filter(date_from, date_to)
+
+    chirashi_filter = ""
+    if chirashi_name:
+        chirashi_filter = f"AND c.chirashi_name = '{chirashi_name}'"
+
+    pc_cte, _ = _product_cycles_cte(product_cycles)
+    pc_prefix = f"{pc_cte},\n\n" if pc_cte else ""
+
+    return f"""
+WITH {pc_prefix}chirashi_recipients AS (
+  SELECT
+    c.chirashi_name,
+    a.`{Col.CUSTOMER_ID}` AS customer_id,
+    MIN(SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)) AS chirashi_order_count,
+    ANY_VALUE(cfg.target_product) AS target_product
+  FROM {chirashi} c
+  JOIN {config} cfg
+    ON c.chirashi_name = cfg.chirashi_name
+    AND cfg.company = '{company_key}'
+  JOIN {integrated} a
+    ON c.chirashi_order_number = a.`受注_受注番号`
+  WHERE cfg.target_product IS NOT NULL
+    AND TRIM(cfg.target_product) != ''
+    AND a.`{Col.ORDER_STATUS}` = 'shipped'{df}
+    {chirashi_filter}
+  GROUP BY 1, 2
+),
+switched_products AS (
+  SELECT DISTINCT
+    a.`{Col.SUBSCRIPTION_PRODUCT_NAME}` AS switched_product_name,
+    cr.customer_id
+  FROM chirashi_recipients cr
+  JOIN {integrated} a
+    ON cr.customer_id = a.`{Col.CUSTOMER_ID}`
+  WHERE EXISTS (
+    SELECT 1 FROM UNNEST(SPLIT(cr.target_product, ',')) AS tp
+    WHERE STRPOS(a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`, TRIM(tp)) > 0
+  )
+  AND SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) > cr.chirashi_order_count
+  AND a.`{Col.ORDER_STATUS}` = 'shipped'
+)
+SELECT
+  sp.switched_product_name,
+  COUNT(DISTINCT sp.customer_id) AS customer_count
+FROM switched_products sp
+LEFT JOIN product_cycles pc
+  ON STRPOS(sp.switched_product_name, pc.name) > 0
+WHERE pc.name IS NULL
+GROUP BY 1
+ORDER BY 2 DESC
+"""
+
+
 def build_chirashi_retention_sql(
     company_key: str,
     chirashi_name: str | None = None,

@@ -16,6 +16,7 @@ from src.queries.chirashi import (
     build_chirashi_frequency_rate_sql,
     build_chirashi_list_sql,
     build_chirashi_retention_sql,
+    build_chirashi_unmatched_products_sql,
     build_chirashi_upsell_rate_sql,
 )
 from src.session import SessionKey, get_selected_company_key
@@ -307,3 +308,25 @@ with tab_retention:
     st.caption(
         "※ 切替回数より前の継続率は定義上100%（例: 3回目切替 → 1〜3回目は100%）"
     )
+
+    # ----- 商品マスタ未登録の警告 -----
+    try:
+        unmatched_sql = build_chirashi_unmatched_products_sql(
+            company_key, chirashi_filter,
+            order_date_from, order_date_to, pc_data,
+        )
+        unmatched_df = execute_query(client, unmatched_sql)
+    except Exception:
+        unmatched_df = pd.DataFrame()
+
+    if not unmatched_df.empty:
+        product_list = "\n".join(
+            f"- {row['switched_product_name']}（{int(row['customer_count']):,}人）"
+            for _, row in unmatched_df.iterrows()
+        )
+        st.warning(
+            "以下の切替先商品が商品マスタ（商品サイクル設定）に未登録です。\n"
+            "デフォルト周期（30日）で計算されるため、継続率の精度が低下します。\n"
+            "**マスタ管理ページで周期を設定してください。**\n\n"
+            f"{product_list}"
+        )
