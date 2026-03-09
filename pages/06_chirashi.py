@@ -43,14 +43,17 @@ def _build_grouped_retention_html(group_df: pd.DataFrame, max_n: int) -> str:
         switch_n = int(row["switch_order_count"])
         total = int(row["total_switched"])
 
-        # retained / eligible を事前に取得
+        # retained / eligible / cont_denom を事前に取得
         retained = {}
         eligible = {}
+        cont_denom = {}
         for n in range(1, max_n + 1):
             r_col = f"retained_{n}"
             e_col = f"eligible_{n}"
+            cd_col = f"cont_denom_{n}"
             retained[n] = int(row[r_col]) if r_col in row.index and pd.notna(row[r_col]) else 0
             eligible[n] = int(row[e_col]) if e_col in row.index and pd.notna(row[e_col]) else 0
+            cont_denom[n] = int(row[cd_col]) if cd_col in row.index and pd.notna(row[cd_col]) else 0
 
         # グループ見出し行
         top_border = 'border-top:2px solid #ccc;' if i > 0 else ''
@@ -60,13 +63,13 @@ def _build_grouped_retention_html(group_df: pd.DataFrame, max_n: int) -> str:
             f'{switch_n}回目切替（{total:,}人）</td></tr>'
         )
 
-        # 継続率行: retained_N / retained_(N-1)
+        # 継続率行: retained_N / cont_denom_N（N-1到達済み かつ N回目発送可能な人が分母）
         cells = (
             '<td style="padding:2px 8px;font-size:12px;color:#555;'
             'white-space:nowrap;">継続率</td>'
         )
         for n in range(1, max_n + 1):
-            if eligible[n] == 0:
+            if cont_denom[n] == 0:
                 cells += (
                     '<td style="text-align:center;padding:2px 6px;'
                     'font-size:13px;color:#ccc;">-</td>'
@@ -76,16 +79,16 @@ def _build_grouped_retention_html(group_df: pd.DataFrame, max_n: int) -> str:
                     '<td style="text-align:center;padding:2px 6px;white-space:nowrap;">'
                     '<span style="font-size:14px;font-weight:600;">100.0%</span><br>'
                     f'<span style="font-size:10px;color:#888;">'
-                    f'({retained[n]:,}/{retained[n]:,})</span></td>'
+                    f'({retained[n]:,}/{cont_denom[n]:,})</span></td>'
                 )
             else:
-                prev = retained[n - 1] if n > 1 else total
-                rate = retained[n] / prev * 100 if prev > 0 else 0
+                denom = cont_denom[n]
+                rate = retained[n] / denom * 100 if denom > 0 else 0
                 cells += (
                     f'<td style="text-align:center;padding:2px 6px;white-space:nowrap;">'
                     f'<span style="font-size:14px;font-weight:600;">{rate:.1f}%</span><br>'
                     f'<span style="font-size:10px;color:#888;">'
-                    f'({retained[n]:,}/{prev:,})</span></td>'
+                    f'({retained[n]:,}/{denom:,})</span></td>'
                 )
         rows_html += f"<tr>{cells}</tr>"
 

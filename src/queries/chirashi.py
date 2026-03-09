@@ -235,11 +235,25 @@ def build_chirashi_retention_sql(
     if chirashi_name:
         chirashi_filter = f"AND c.chirashi_name = '{chirashi_name}'"
 
-    retained_cols = ",\n    ".join(
-        f"COUNT(DISTINCT CASE WHEN max_shipped >= {i} THEN customer_id END) AS retained_{i},\n"
-        f"    COUNT(DISTINCT CASE WHEN expected_max >= {i} THEN customer_id END) AS eligible_{i}"
-        for i in range(1, max_n + 1)
-    )
+    retained_parts = []
+    for i in range(1, max_n + 1):
+        retained_parts.append(
+            f"COUNT(DISTINCT CASE WHEN max_shipped >= {i} THEN customer_id END) AS retained_{i}"
+        )
+        retained_parts.append(
+            f"COUNT(DISTINCT CASE WHEN expected_max >= {i} THEN customer_id END) AS eligible_{i}"
+        )
+        # 継続率の分母: N-1回到達済み かつ N回目が発送され得る人
+        prev = i - 1
+        if prev == 0:
+            retained_parts.append(
+                f"COUNT(DISTINCT CASE WHEN expected_max >= {i} THEN customer_id END) AS cont_denom_{i}"
+            )
+        else:
+            retained_parts.append(
+                f"COUNT(DISTINCT CASE WHEN max_shipped >= {prev} AND expected_max >= {i} THEN customer_id END) AS cont_denom_{i}"
+            )
+    retained_cols = ",\n    ".join(retained_parts)
 
     return f"""
 WITH chirashi_recipients AS (
