@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from src.constants import Col, PROJECT_ID
 
 
@@ -33,7 +35,30 @@ def _integrated_ref(company_key: str) -> str:
     return f"`{PROJECT_ID}.{dataset}.{table}`"
 
 
-def build_chirashi_upsell_rate_sql(company_key: str) -> str:
+def _date_filter(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    alias: str = "a",
+) -> str:
+    """受注売上日の日付フィルタ句を生成."""
+    parts = []
+    if date_from:
+        parts.append(
+            f"SAFE_CAST({alias}.`{Col.SALES_DATE}` AS TIMESTAMP) >= '{date_from}'"
+        )
+    if date_to:
+        next_day = date_to + timedelta(days=1)
+        parts.append(
+            f"SAFE_CAST({alias}.`{Col.SALES_DATE}` AS TIMESTAMP) < '{next_day}'"
+        )
+    return ("\n    AND " + "\n    AND ".join(parts)) if parts else ""
+
+
+def build_chirashi_upsell_rate_sql(
+    company_key: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> str:
     """チラシ別アップセル率を算出するSQL.
 
     分母: チラシを送った顧客数（顧客_id DISTINCT）
@@ -46,6 +71,7 @@ def build_chirashi_upsell_rate_sql(company_key: str) -> str:
     chirashi = _chirashi_ref(company_key)
     config = _config_ref(company_key)
     integrated = _integrated_ref(company_key)
+    df = _date_filter(date_from, date_to)
 
     return f"""
 WITH chirashi_recipients AS (
@@ -63,7 +89,7 @@ WITH chirashi_recipients AS (
     ON c.chirashi_order_number = a.`受注_受注番号`
   WHERE cfg.target_product IS NOT NULL
     AND TRIM(cfg.target_product) != ''
-    AND a.`{Col.ORDER_STATUS}` = 'shipped'
+    AND a.`{Col.ORDER_STATUS}` = 'shipped'{df}
   GROUP BY 1, 2
 ),
 
@@ -102,10 +128,87 @@ ORDER BY 1
 """
 
 
+def build_chirashi_frequency_rate_sql(
+    company_key: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> str:
+    """F(回数)別転換率を算出するSQL.
+
+    N回目に投函した顧客のうち、N+1回目にターゲット商品に切り替えた顧客の割合。
+
+    Returns:
+        SQL文字列。結果カラム:
+        chirashi_name, order_count, total_at_n, switched_at_next, conversion_rate
+    """
+    chirashi = _chirashi_ref(company_key)
+    config = _config_ref(company_key)
+    integrated = _integrated_ref(company_key)
+    df = _date_filter(date_from, date_to)
+
+    return f"""
+WITH chirashi_orders AS (
+  -- チラシが投函された受注（顧客 × チラシ名 × 定期回数）
+  SELECT
+    c.chirashi_name,
+    a.`{Col.CUSTOMER_ID}` AS customer_id,
+    SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) AS order_count,
+    cfg.target_product
+  FROM {chirashi} c
+  JOIN {config} cfg
+    ON c.chirashi_name = cfg.chirashi_name
+    AND cfg.company = '{company_key}'
+  JOIN {integrated} a
+    ON c.chirashi_order_number = a.`受注_受注番号`
+  WHERE cfg.target_product IS NOT NULL
+    AND TRIM(cfg.target_product) != ''
+    AND a.`{Col.ORDER_STATUS}` = 'shipped'{df}
+),
+
+switched_next AS (
+  -- N回目投函 → N+1回目にターゲット商品に切り替えた顧客
+  SELECT DISTINCT
+    co.chirashi_name,
+    co.order_count,
+    co.customer_id
+  FROM chirashi_orders co
+  JOIN {integrated} a
+    ON co.customer_id = a.`{Col.CUSTOMER_ID}`
+  WHERE SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = co.order_count + 1
+    AND a.`{Col.ORDER_STATUS}` = 'shipped'
+    AND EXISTS (
+      SELECT 1 FROM UNNEST(SPLIT(co.target_product, ',')) AS tp
+      WHERE STRPOS(a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`, TRIM(tp)) > 0
+    )
+)
+
+SELECT
+  co.chirashi_name,
+  co.order_count,
+  COUNT(DISTINCT co.customer_id) AS total_at_n,
+  COUNT(DISTINCT sn.customer_id) AS switched_at_next,
+  ROUND(
+    SAFE_DIVIDE(
+      COUNT(DISTINCT sn.customer_id),
+      COUNT(DISTINCT co.customer_id)
+    ) * 100, 1
+  ) AS conversion_rate
+FROM chirashi_orders co
+LEFT JOIN switched_next sn
+  ON co.chirashi_name = sn.chirashi_name
+  AND co.order_count = sn.order_count
+  AND co.customer_id = sn.customer_id
+GROUP BY 1, 2
+ORDER BY 1, 2
+"""
+
+
 def build_chirashi_retention_sql(
     company_key: str,
     chirashi_name: str | None = None,
     max_n: int = 24,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> str:
     """切り替えタイミング別継続率を算出するSQL.
 
@@ -127,6 +230,7 @@ def build_chirashi_retention_sql(
     chirashi = _chirashi_ref(company_key)
     config = _config_ref(company_key)
     integrated = _integrated_ref(company_key)
+    df = _date_filter(date_from, date_to)
 
     chirashi_filter = ""
     if chirashi_name:
@@ -153,7 +257,7 @@ WITH chirashi_recipients AS (
     ON c.chirashi_order_number = a.`受注_受注番号`
   WHERE cfg.target_product IS NOT NULL
     AND TRIM(cfg.target_product) != ''
-    AND a.`{Col.ORDER_STATUS}` = 'shipped'
+    AND a.`{Col.ORDER_STATUS}` = 'shipped'{df}
     {chirashi_filter}
   GROUP BY 1, 2
 ),

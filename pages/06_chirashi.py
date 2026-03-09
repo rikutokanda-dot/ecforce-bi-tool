@@ -12,11 +12,12 @@ import streamlit as st
 from src.bigquery_client import execute_query, get_bigquery_client
 from src.queries.chirashi import (
     build_chirashi_config_sql,
+    build_chirashi_frequency_rate_sql,
     build_chirashi_list_sql,
     build_chirashi_retention_sql,
     build_chirashi_upsell_rate_sql,
 )
-from src.session import get_selected_company_key
+from src.session import SessionKey, get_selected_company_key
 
 # ---------------------------------------------------------------------------
 # HTML描画ヘルパー
@@ -131,6 +132,10 @@ if not company_key:
 
 client = get_bigquery_client()
 
+# サイドバーの売上日フィルタを取得
+sales_date_from = st.session_state.get(SessionKey.SALES_DATE_FROM)
+sales_date_to = st.session_state.get(SessionKey.SALES_DATE_TO)
+
 # ---------------------------------------------------------------------------
 # ターゲット商品設定の表示
 # ---------------------------------------------------------------------------
@@ -161,7 +166,7 @@ with tab_upsell:
     )
 
     try:
-        sql = build_chirashi_upsell_rate_sql(company_key)
+        sql = build_chirashi_upsell_rate_sql(company_key, sales_date_from, sales_date_to)
         df = execute_query(client, sql)
     except Exception as e:
         st.error(f"クエリ実行エラー: {e}")
@@ -210,6 +215,36 @@ with tab_upsell:
         )
         st.altair_chart(chart, use_container_width=True)
 
+    # ----- F(回数)別転換率 -----
+    st.divider()
+    st.subheader("F(回数)別転換率")
+    st.caption(
+        "N回目に投函した顧客のうち、N+1回目にターゲット商品に切り替えた割合"
+    )
+
+    try:
+        freq_sql = build_chirashi_frequency_rate_sql(
+            company_key, sales_date_from, sales_date_to
+        )
+        freq_df = execute_query(client, freq_sql)
+    except Exception as e:
+        st.error(f"F転換率クエリ実行エラー: {e}")
+        freq_df = pd.DataFrame()
+
+    if not freq_df.empty:
+        for cname in freq_df["chirashi_name"].unique():
+            cdf = freq_df[freq_df["chirashi_name"] == cname].copy()
+            with st.expander(f"{cname}", expanded=True):
+                disp = cdf[["order_count", "total_at_n", "switched_at_next", "conversion_rate"]].copy()
+                disp.columns = ["投函F(回数)", "投函数", "次回切替数", "転換率(%)"]
+                disp["投函F(回数)"] = disp["投函F(回数)"].apply(lambda x: f"{int(x)}回目")
+                disp["投函数"] = disp["投函数"].apply(lambda x: f"{int(x):,}")
+                disp["次回切替数"] = disp["次回切替数"].apply(lambda x: f"{int(x):,}")
+                disp["転換率(%)"] = disp["転換率(%)"].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(disp, use_container_width=True, hide_index=True)
+    else:
+        st.info("F転換率データがありません。")
+
 
 # ===== タブ2: 切り替えタイミング別継続率 =====
 with tab_retention:
@@ -243,7 +278,9 @@ with tab_retention:
     max_n = st.slider("最大定期回数", min_value=6, max_value=24, value=12, key="chirashi_max_n")
 
     try:
-        ret_sql = build_chirashi_retention_sql(company_key, chirashi_filter, max_n)
+        ret_sql = build_chirashi_retention_sql(
+            company_key, chirashi_filter, max_n, sales_date_from, sales_date_to
+        )
         ret_df = execute_query(client, ret_sql)
     except Exception as e:
         st.error(f"継続率クエリ実行エラー: {e}")
