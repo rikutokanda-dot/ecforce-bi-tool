@@ -16,6 +16,7 @@ CONFIG_DIR = Path(__file__).parent.parent / "config"
 PRODUCT_CYCLES_FILE = CONFIG_DIR / "product_cycles.yaml"
 UPSELL_MAPPING_FILE = CONFIG_DIR / "upsell_mapping.yaml"
 TIER_BOUNDARIES_FILE = CONFIG_DIR / "tier_boundaries.yaml"
+EMAIL_UPSELL_MAPPING_FILE = CONFIG_DIR / "email_upsell_mapping.yaml"
 
 # GCS設定
 GCS_BUCKET = os.environ.get("CONFIG_GCS_BUCKET", "ecforce-bi-config")
@@ -197,6 +198,23 @@ def get_upsell_targets(product_name: str) -> list[dict]:
         m for m in load_upsell_mappings()
         if product_name in m.get("denominator_names", [])
     ]
+
+
+# =====================================================================
+# メールアップセルマッピング
+# =====================================================================
+
+
+@st.cache_data(ttl=300)
+def load_email_upsell_mappings() -> list[dict]:
+    """メールアップセルマッピングを読み込む."""
+    data = _read_yaml("email_upsell_mapping.yaml", EMAIL_UPSELL_MAPPING_FILE)
+    return data.get("mappings", [])
+
+
+def save_email_upsell_mappings(mappings: list[dict]) -> None:
+    """メールアップセルマッピングをYAMLに保存."""
+    _write_yaml("email_upsell_mapping.yaml", EMAIL_UPSELL_MAPPING_FILE, {"mappings": mappings})
 
 
 # =====================================================================

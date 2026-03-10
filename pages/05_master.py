@@ -9,9 +9,11 @@ import streamlit as st
 
 from src.bigquery_client import fetch_filter_options, fetch_filtered_options, get_bigquery_client
 from src.config_loader import (
+    load_email_upsell_mappings,
     load_product_cycles,
     load_tier_boundaries,
     load_upsell_mappings,
+    save_email_upsell_mappings,
     save_product_cycles,
     save_tier_boundaries,
     save_upsell_mappings,
@@ -22,8 +24,8 @@ from src.session import get_selected_company_key
 
 st.header("マスタ管理")
 
-tab_cycles, tab_upsell, tab_tier = st.tabs(
-    ["商品サイクル", "アップセルマッピング", "Tier境界値"]
+tab_cycles, tab_upsell, tab_email_upsell, tab_tier = st.tabs(
+    ["商品サイクル", "アップセルマッピング", "メールアップセルマッピング", "Tier境界値"]
 )
 
 
@@ -270,6 +272,180 @@ with tab_upsell:
             st.success(f"{len(valid_mappings)} 件のマッピングを保存しました。")
             st.rerun()
 
+
+
+# =====================================================================
+# メールアップセルマッピングタブ
+# =====================================================================
+with tab_email_upsell:
+    st.subheader("メールアップセルマッピング")
+    st.caption("メール施策によるアップセル率 = 分子(人数) / 分母(人数) × 100")
+
+    company_key_email = get_selected_company_key()
+    if not company_key_email:
+        st.warning("サイドバーから会社を選択してください。")
+    else:
+        # --- 商品カテゴリフィルタ ---
+        email_categories = _fetch_product_categories(company_key_email)
+        email_selected_categories = st.multiselect(
+            "商品カテゴリで絞り込み",
+            email_categories,
+            key="master_email_upsell_category_filter",
+            help="選択すると、分子・分母・期間デフォルトの候補がこのカテゴリの商品のみに絞り込まれます",
+        )
+
+        if email_selected_categories:
+            email_product_names: list[str] = _fetch_product_names_by_category(
+                company_key_email, tuple(email_selected_categories),
+            )
+        else:
+            email_product_names: list[str] = _fetch_all_product_names(company_key_email)
+
+        email_mappings = load_email_upsell_mappings()
+
+        # session_state でマッピングリストを管理
+        if "email_upsell_mappings_edit" not in st.session_state:
+            st.session_state["email_upsell_mappings_edit"] = email_mappings if email_mappings else []
+
+        email_edit_mappings: list[dict] = st.session_state["email_upsell_mappings_edit"]
+
+        for idx, m in enumerate(email_edit_mappings):
+            with st.container(border=True):
+                header_col, del_col = st.columns([10, 1])
+                with del_col:
+                    if st.button("🗑️", key=f"email_del_{idx}", help="この行を削除"):
+                        email_edit_mappings.pop(idx)
+                        st.session_state["email_upsell_mappings_edit"] = email_edit_mappings
+                        st.rerun()
+
+                # --- マッピング名 ---
+                with header_col:
+                    current_label = m.get("label", f"マッピング {idx + 1}")
+                    sel_label = st.text_input(
+                        "マッピング名",
+                        value=current_label,
+                        key=f"email_label_{idx}",
+                    )
+                    m["label"] = sel_label
+
+                # 類似度ソートの基準
+                ref_name = (m.get("numerator_names") or [""])[0]
+                sorted_candidates = _sort_by_similarity(email_product_names, ref_name)
+
+                # --- 分子 ---
+                current_numerators = m.get("numerator_names", [])
+                num_options = list(sorted_candidates)
+                for cv in current_numerators:
+                    if cv and cv not in num_options:
+                        num_options.insert(0, cv)
+
+                sel_numerators = st.multiselect(
+                    "分子（複数選択可）",
+                    num_options,
+                    default=current_numerators,
+                    key=f"email_numerator_{idx}",
+                )
+                m["numerator_names"] = sel_numerators
+
+                # --- 分母 ---
+                current_denominators = m.get("denominator_names", [])
+                den_options = list(sorted_candidates)
+                for cv in current_denominators:
+                    if cv and cv not in den_options:
+                        den_options.insert(0, cv)
+
+                sel_denominators = st.multiselect(
+                    "分母（複数選択可）",
+                    den_options,
+                    default=current_denominators,
+                    key=f"email_denominator_{idx}",
+                )
+                m["denominator_names"] = sel_denominators
+
+                # --- 期間デフォルト ---
+                st.markdown("**期間デフォルト**（定期受注_作成日時でフィルタ / サイドバー未設定時に自動適用）")
+
+                period_mode = st.radio(
+                    "期間の設定方法",
+                    ["商品で自動検出", "手動入力"],
+                    index=0 if not m.get("period_from") else 1,
+                    key=f"email_period_mode_{idx}",
+                    horizontal=True,
+                )
+
+                if period_mode == "商品で自動検出":
+                    current_period_ref = m.get("period_ref_names", [])
+                    period_ref_name = (current_period_ref or [""])[0] or ref_name
+                    sorted_period = _sort_by_similarity(email_product_names, period_ref_name)
+                    period_options = list(sorted_period)
+                    for cv in current_period_ref:
+                        if cv and cv not in period_options:
+                            period_options.insert(0, cv)
+
+                    sel_period_ref = st.multiselect(
+                        "この商品の定期受注_作成日時の範囲をデフォルト期間にする",
+                        period_options,
+                        default=current_period_ref,
+                        key=f"email_period_ref_{idx}",
+                    )
+                    m["period_ref_names"] = sel_period_ref
+                    m["period_from"] = None
+                    m["period_to"] = None
+                else:
+                    pc1, pc2 = st.columns(2)
+                    with pc1:
+                        current_from = m.get("period_from")
+                        if isinstance(current_from, str):
+                            try:
+                                from datetime import date as dt_date
+                                current_from = dt_date.fromisoformat(current_from)
+                            except (ValueError, TypeError):
+                                current_from = None
+                        sel_from = st.date_input(
+                            "定期受注_作成日時 開始日",
+                            value=current_from,
+                            key=f"email_period_from_{idx}",
+                        )
+                    with pc2:
+                        current_to = m.get("period_to")
+                        if isinstance(current_to, str):
+                            try:
+                                from datetime import date as dt_date
+                                current_to = dt_date.fromisoformat(current_to)
+                            except (ValueError, TypeError):
+                                current_to = None
+                        sel_to = st.date_input(
+                            "定期受注_作成日時 終了日",
+                            value=current_to,
+                            key=f"email_period_to_{idx}",
+                        )
+                    m["period_from"] = sel_from.isoformat() if sel_from else None
+                    m["period_to"] = sel_to.isoformat() if sel_to else None
+                    m["period_ref_names"] = []
+
+        # --- 行追加ボタン ---
+        if st.button("＋ マッピングを追加", key="add_email_mapping"):
+            email_edit_mappings.append({
+                "label": "",
+                "numerator_names": [],
+                "denominator_names": [],
+                "period_ref_names": [],
+            })
+            st.session_state["email_upsell_mappings_edit"] = email_edit_mappings
+            st.rerun()
+
+        # --- 保存ボタン ---
+        st.markdown("")
+        if st.button("保存", type="primary", key="save_email_upsell"):
+            valid_mappings = [
+                m for m in email_edit_mappings
+                if m.get("numerator_names") and m.get("denominator_names")
+            ]
+            save_email_upsell_mappings(valid_mappings)
+            load_email_upsell_mappings.clear()
+            st.session_state["email_upsell_mappings_edit"] = valid_mappings
+            st.success(f"{len(valid_mappings)} 件のマッピングを保存しました。")
+            st.rerun()
 
 
 # =====================================================================
