@@ -220,8 +220,11 @@ def _product_cycles_cte(product_cycles: dict | None) -> tuple[str, int]:
 
     rows = []
     for p in products:
+        # cycle2キーが存在しない = 未設定 → CTEに含めない（NULLマッチ→実績ベース）
+        if "cycle2" not in p or p["cycle2"] is None:
+            continue
         name = p["name"].replace("'", "''")
-        c2 = p.get("cycle2", 0) or 0
+        c2 = int(p["cycle2"])
         rows.append(
             f"STRUCT('{name}' AS name, {c2} AS cycle2)"
         )

@@ -320,22 +320,23 @@ with tab_retention:
         unmatched_df = pd.DataFrame()
 
     if not unmatched_df.empty:
-        # 未登録商品をマスタに自動追加（cycle1=0, cycle2=0 = 未設定）
+        # 未登録商品をマスタに自動追加（cycle2キーなし = 未設定）
         new_names = unmatched_df["switched_product_name"].tolist()
         existing_names = {p["name"] for p in pc_data.get("products", [])}
         added = []
         for name in new_names:
             if name not in existing_names:
-                pc_data["products"].append({"name": name, "cycle1": 0, "cycle2": 0})
+                pc_data["products"].append({"name": name})
                 added.append(name)
         if added:
             save_product_cycles(pc_data)
             st.cache_data.clear()
 
-    # cycle2=0（未設定）の商品を警告
+    # cycle2キーが存在しない（未設定）商品を警告
+    # ※ cycle2: 0 は「単品/周期なし」として正当な設定
     unconfigured = [
         p["name"] for p in pc_data.get("products", [])
-        if not p.get("cycle2") or p.get("cycle2", 0) <= 0
+        if "cycle2" not in p or p["cycle2"] is None
     ]
     if unconfigured:
         product_list = "\n".join(f"- {name}" for name in unconfigured)
