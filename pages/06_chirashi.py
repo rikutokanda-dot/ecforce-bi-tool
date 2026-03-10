@@ -5,6 +5,8 @@
 2. 切り替えタイミング別継続率: 切り替えた回数ごとの、その後の継続率
 """
 
+import math
+
 import altair as alt
 import pandas as pd
 import streamlit as st
@@ -26,7 +28,10 @@ from src.session import SessionKey, get_selected_company_key
 # ---------------------------------------------------------------------------
 
 
-def _build_grouped_retention_html(group_df: pd.DataFrame, max_n: int) -> str:
+def _build_grouped_retention_html(
+    group_df: pd.DataFrame, max_n: int, default_cycle2: int = 30,
+    max_days: int = 365, product_cycles: dict = None,
+) -> str:
     """切替回数ごとにグループ化した継続率・残存率テーブルをHTML描画."""
 
     # ヘッダー
@@ -45,6 +50,36 @@ def _build_grouped_retention_html(group_df: pd.DataFrame, max_n: int) -> str:
         switch_n = int(row["switch_order_count"])
         total = int(row["total_switched"])
 
+        # 日数計算用: 商品名からproduct_cyclesマスタを直接参照
+        def _lookup_cycles(product_name: str) -> tuple[int, int]:
+            """商品名からcycle1, cycle2を取得."""
+            if not product_name or not product_cycles:
+                return default_cycle2, default_cycle2
+            for p in product_cycles.get("products", []):
+                if p.get("name") == product_name:
+                    c1 = p.get("cycle1")
+                    c2 = p.get("cycle2")
+                    if c1 is not None and not (isinstance(c1, float) and math.isnan(c1)):
+                        c1 = int(c1)
+                    else:
+                        c1 = default_cycle2
+                    if c2 is not None and not (isinstance(c2, float) and math.isnan(c2)):
+                        c2 = int(c2)
+                    else:
+                        c2 = default_cycle2
+                    return c1, c2
+            return default_cycle2, default_cycle2
+
+        orig_name = row.get("original_product_name", "") if "original_product_name" in row.index else ""
+        switched_name = row.get("switched_product_name", "") if "switched_product_name" in row.index else ""
+        if pd.isna(orig_name):
+            orig_name = ""
+        if pd.isna(switched_name):
+            switched_name = ""
+
+        orig_c1, orig_c2 = _lookup_cycles(orig_name)
+        up_c1, up_c2 = _lookup_cycles(switched_name)
+
         # retained / eligible / cont_denom を事前に取得
         retained = {}
         eligible = {}
@@ -59,23 +94,56 @@ def _build_grouped_retention_html(group_df: pd.DataFrame, max_n: int) -> str:
 
         # グループ見出し行
         top_border = 'border-top:2px solid #ccc;' if i > 0 else ''
+        product_info = ""
+        if orig_name or switched_name:
+            product_info = (
+                f'<br><span style="font-size:11px;color:#888;font-weight:400;">'
+                f'{orig_name} → {switched_name}</span>'
+            )
         rows_html += (
             f'<tr><td colspan="{max_n + 1}" style="padding:8px 8px 2px;'
             f'font-weight:700;font-size:13px;{top_border}">'
-            f'{switch_n}回目切替（{total:,}人）</td></tr>'
+            f'{switch_n}回目切替（{total:,}人）{product_info}</td></tr>'
         )
 
-        # 継続率行: retained_N / cont_denom_N（N-1到達済み かつ N回目発送可能な人が分母）
+        # 累計日数を事前計算（期間超えの判定に全行で使う）
+        pre_total = orig_c1 + max(switch_n - 2, 0) * orig_c2
+        cum_days = {}
+        for n in range(1, max_n + 1):
+            if n == 1:
+                cum_days[n] = 0
+            elif n <= switch_n:
+                cum_days[n] = orig_c1 + (n - 2) * orig_c2
+            elif n == switch_n + 1:
+                cum_days[n] = pre_total + up_c1
+            else:
+                cum_days[n] = pre_total + up_c1 + (n - switch_n - 1) * up_c2
+
+        _dash = '<td style="text-align:center;padding:2px 6px;font-size:13px;color:#ccc;">-</td>'
+
+        # 累計日数行
+        day_cells = (
+            '<td style="padding:2px 8px;font-size:11px;color:#999;'
+            'white-space:nowrap;">累計日数</td>'
+        )
+        for n in range(1, max_n + 1):
+            if cum_days[n] > max_days:
+                day_cells += _dash
+            else:
+                day_cells += (
+                    f'<td style="text-align:center;padding:2px 6px;'
+                    f'font-size:11px;color:#999;white-space:nowrap;">~{cum_days[n]}日</td>'
+                )
+        rows_html += f"<tr>{day_cells}</tr>"
+
+        # 継続率行
         cells = (
             '<td style="padding:2px 8px;font-size:12px;color:#555;'
             'white-space:nowrap;">継続率</td>'
         )
         for n in range(1, max_n + 1):
-            if cont_denom[n] == 0:
-                cells += (
-                    '<td style="text-align:center;padding:2px 6px;'
-                    'font-size:13px;color:#ccc;">-</td>'
-                )
+            if cum_days[n] > max_days or cont_denom[n] == 0:
+                cells += _dash
             elif n <= switch_n:
                 cells += (
                     '<td style="text-align:center;padding:2px 6px;white-space:nowrap;">'
@@ -94,17 +162,14 @@ def _build_grouped_retention_html(group_df: pd.DataFrame, max_n: int) -> str:
                 )
         rows_html += f"<tr>{cells}</tr>"
 
-        # 残存率行: retained_N / eligible_N
+        # 残存率行
         cells = (
             '<td style="padding:2px 8px 6px;font-size:12px;color:#555;'
             'white-space:nowrap;">残存率</td>'
         )
         for n in range(1, max_n + 1):
-            if eligible[n] == 0:
-                cells += (
-                    '<td style="text-align:center;padding:2px 6px 6px;'
-                    'font-size:13px;color:#ccc;">-</td>'
-                )
+            if cum_days[n] > max_days or eligible[n] == 0:
+                cells += _dash
             else:
                 rate = retained[n] / eligible[n] * 100
                 cells += (
@@ -141,6 +206,10 @@ client = get_bigquery_client()
 order_date_from = st.session_state.get(SessionKey.ORDER_DATE_FROM)
 order_date_to = st.session_state.get(SessionKey.ORDER_DATE_TO)
 
+if not order_date_from and not order_date_to:
+    st.info("サイドバーで「受注日でフィルタ」を有効にしてください。")
+    st.stop()
+
 # ---------------------------------------------------------------------------
 # ターゲット商品設定の表示
 # ---------------------------------------------------------------------------
@@ -175,30 +244,30 @@ with tab_upsell:
         df = execute_query(client, sql)
     except Exception as e:
         st.error(f"クエリ実行エラー: {e}")
-        st.stop()
+        df = pd.DataFrame()
 
     if df.empty:
         st.info(
             "データがありません。スプシの「チラシ設定」シートで"
             "ターゲット商品を設定してください。"
         )
-        st.stop()
 
-    # 表示用フォーマット
-    display_df = df.copy()
-    display_df.columns = ["チラシ名", "分母（送付者数）", "分子（切替者数）", "アップセル率(%)"]
-    display_df["分母（送付者数）"] = display_df["分母（送付者数）"].apply(lambda x: f"{int(x):,}")
-    display_df["分子（切替者数）"] = display_df["分子（切替者数）"].apply(lambda x: f"{int(x):,}")
-    display_df["アップセル率(%)"] = display_df["アップセル率(%)"].apply(lambda x: f"{x:.1f}%")
+    if not df.empty:
+        # 表示用フォーマット
+        display_df = df.copy()
+        display_df.columns = ["チラシ名", "投函数", "分母（送付者数）", "分子（切替者数）", "アップセル率(%)"]
+        display_df["投函数"] = display_df["投函数"].apply(lambda x: f"{int(x):,}")
+        display_df["分母（送付者数）"] = display_df["分母（送付者数）"].apply(lambda x: f"{int(x):,}")
+        display_df["分子（切替者数）"] = display_df["分子（切替者数）"].apply(lambda x: f"{int(x):,}")
+        display_df["アップセル率(%)"] = display_df["アップセル率(%)"].apply(lambda x: f"{x:.1f}%")
 
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-    )
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+        )
 
-    # 縦棒グラフ（チラシ名を横書きで全文表示）
-    if len(df) > 0:
+        # 縦棒グラフ
         chart_df = df[["chirashi_name", "upsell_rate"]].copy()
         chart = (
             alt.Chart(chart_df)
@@ -220,35 +289,35 @@ with tab_upsell:
         )
         st.altair_chart(chart, use_container_width=True)
 
-    # ----- F(回数)別転換率 -----
-    st.divider()
-    st.subheader("F(回数)別転換率")
-    st.caption(
-        "N回目に投函した顧客のうち、N+1回目にターゲット商品に切り替えた割合"
-    )
-
-    try:
-        freq_sql = build_chirashi_frequency_rate_sql(
-            company_key, order_date_from, order_date_to
+        # ----- F(回数)別転換率 -----
+        st.divider()
+        st.subheader("F(回数)別転換率")
+        st.caption(
+            "チラシ受領者のうち、各回数で初めてターゲット商品に切り替えた顧客の割合（顧客重複なし）"
         )
-        freq_df = execute_query(client, freq_sql)
-    except Exception as e:
-        st.error(f"F転換率クエリ実行エラー: {e}")
-        freq_df = pd.DataFrame()
 
-    if not freq_df.empty:
-        for cname in freq_df["chirashi_name"].unique():
-            cdf = freq_df[freq_df["chirashi_name"] == cname].copy()
-            with st.expander(f"{cname}", expanded=True):
-                disp = cdf[["order_count", "total_at_n", "switched_at_next", "conversion_rate"]].copy()
-                disp.columns = ["投函F(回数)", "投函数", "次回切替数", "転換率(%)"]
-                disp["投函F(回数)"] = disp["投函F(回数)"].apply(lambda x: f"{int(x)}回目")
-                disp["投函数"] = disp["投函数"].apply(lambda x: f"{int(x):,}")
-                disp["次回切替数"] = disp["次回切替数"].apply(lambda x: f"{int(x):,}")
-                disp["転換率(%)"] = disp["転換率(%)"].apply(lambda x: f"{x:.1f}%")
-                st.dataframe(disp, use_container_width=True, hide_index=True)
-    else:
-        st.info("F転換率データがありません。")
+        try:
+            freq_sql = build_chirashi_frequency_rate_sql(
+                company_key, order_date_from, order_date_to
+            )
+            freq_df = execute_query(client, freq_sql)
+        except Exception as e:
+            st.error(f"F転換率クエリ実行エラー: {e}")
+            freq_df = pd.DataFrame()
+
+        if not freq_df.empty:
+            for cname in freq_df["chirashi_name"].unique():
+                cdf = freq_df[freq_df["chirashi_name"] == cname].copy()
+                with st.expander(f"{cname}", expanded=True):
+                    disp = cdf[["order_count", "total_at_n", "switched_at_next", "conversion_rate"]].copy()
+                    disp.columns = ["切替F(回数)", "投函数", "切替数", "転換率(%)"]
+                    disp["切替F(回数)"] = (disp["切替F(回数)"].astype(int) + 1).apply(lambda x: f"{x}回目")
+                    disp["投函数"] = disp["投函数"].apply(lambda x: f"{int(x):,}")
+                    disp["切替数"] = disp["切替数"].apply(lambda x: f"{int(x):,}")
+                    disp["転換率(%)"] = disp["転換率(%)"].apply(lambda x: f"{x:.1f}%")
+                    st.dataframe(disp, use_container_width=True, hide_index=True)
+        else:
+            st.info("F転換率データがありません。")
 
 
 # ===== タブ2: 切り替えタイミング別継続率 =====
@@ -280,12 +349,15 @@ with tab_retention:
 
     chirashi_filter = None if selected_chirashi == "全チラシ" else selected_chirashi
 
-    max_n = st.slider("最大定期回数", min_value=6, max_value=24, value=12, key="chirashi_max_n")
+    max_days = st.slider(
+        "期間（日数）", min_value=30, max_value=730, value=365, step=30,
+        key="chirashi_max_days",
+    )
 
     try:
         pc_data = load_product_cycles()
         ret_sql = build_chirashi_retention_sql(
-            company_key, chirashi_filter, max_n,
+            company_key, chirashi_filter, max_days,
             order_date_from, order_date_to, pc_data,
         )
         ret_df = execute_query(client, ret_sql)
@@ -297,12 +369,33 @@ with tab_retention:
         st.info("切り替えた顧客が見つかりません。")
         st.stop()
 
+    # SQL生成列数を検出し、データのある最後の列で自動トリム
+    retained_nums = sorted(
+        int(c.split("_")[1])
+        for c in ret_df.columns
+        if c.startswith("retained_")
+    )
+    effective_max_n = 1
+    for n in retained_nums:
+        cd_col = f"cont_denom_{n}"
+        r_col = f"retained_{n}"
+        if (cd_col in ret_df.columns and ret_df[cd_col].sum() > 0) or \
+           (r_col in ret_df.columns and ret_df[r_col].sum() > 0):
+            effective_max_n = n
+
     # ----- チラシ名ごとにエキスパンダーで表示 -----
     chirashi_groups = ret_df.groupby("chirashi_name")
 
+    # デフォルトcycle2をマスタから取得
+    _defaults = pc_data.get("defaults", {}) if pc_data else {}
+    _default_cycle2 = _defaults.get("cycle2", 30)
+
     for chirashi_name, group_df in chirashi_groups:
         with st.expander(f"{chirashi_name}", expanded=True):
-            html = _build_grouped_retention_html(group_df, max_n)
+            html = _build_grouped_retention_html(
+                group_df, effective_max_n, default_cycle2=_default_cycle2,
+                max_days=max_days, product_cycles=pc_data,
+            )
             st.markdown(html, unsafe_allow_html=True)
 
     st.caption(
@@ -332,11 +425,19 @@ with tab_retention:
             save_product_cycles(pc_data)
             st.cache_data.clear()
 
-    # cycle2キーが存在しない（未設定）商品を警告
+    # cycle2キーが存在しない / None / NaN（未設定）商品を警告
     # ※ cycle2: 0 は「単品/周期なし」として正当な設定
+    def _is_unconfigured(p: dict) -> bool:
+        c2 = p.get("cycle2")
+        if c2 is None:
+            return True
+        if isinstance(c2, float) and math.isnan(c2):
+            return True
+        return False
+
     unconfigured = [
         p["name"] for p in pc_data.get("products", [])
-        if "cycle2" not in p or p["cycle2"] is None
+        if _is_unconfigured(p)
     ]
     if unconfigured:
         product_list = "\n".join(f"- {name}" for name in unconfigured)

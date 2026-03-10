@@ -1,32 +1,17 @@
 """コホート分析用SQLクエリビルダー.
 
+GASコードのビジネスロジックを忠実に移植:
 - cohort_base: 受注_定期回数=1 の顧客を月別に集計
+- 論理連番2(再処理)を持つ顧客は除外
+- 論理連番1またはNULL(失敗含む)のデータがある顧客を対象
 - retained_N: shipped & completed の成功数のみカウント
 - 商品切替者除外: 1回目の定期商品名と同じ商品のみ継続としてカウント
 """
 
 from __future__ import annotations
 
-from src.constants import Col, MAX_RETENTION_MONTHS, Status
+from src.constants import Col, LogicalSeq, MAX_RETENTION_MONTHS, Status
 from src.queries.common import build_filter_clause, get_table_ref
-
-# ---------------------------------------------------------------------------
-# STRING型カラムの安全なCAST式 (テーブル再作成で全カラムSTRINGになった対応)
-# ---------------------------------------------------------------------------
-_TS = f"SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)"
-_TS_T2 = f"SAFE_CAST(t2.`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)"
-_SUB_COUNT = f"SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)"
-_SUB_COUNT_T2 = f"SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)"
-
-_PAY_AMOUNT_T2 = f"SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64)"
-
-# 0回目（受注が立った人）から除外するステータス句
-_COHORT_EXCLUDE = (
-    "AND `{col}` NOT IN ({vals})".format(
-        col=Col.ORDER_STATUS,
-        vals=", ".join(f"'{s}'" for s in Status.COHORT_EXCLUDED_STATUSES),
-    )
-)
 
 
 def build_cohort_sql(
@@ -36,7 +21,6 @@ def build_cohort_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
-    ad_url_params: list[str] | None = None,
 ) -> str:
     """通常コホート分析SQL (月別)."""
     table = get_table_ref(company_key)
@@ -46,11 +30,10 @@ def build_cohort_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
-        ad_url_params=ad_url_params,
     )
 
     retained_columns = ",\n      ".join(
-        f"COUNT(DISTINCT IF({_SUB_COUNT_T2} = {i}, t1.customer_id, NULL)) AS retained_{i}"
+        f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i}"
         for i in range(1, MAX_RETENTION_MONTHS + 1)
     )
 
@@ -60,12 +43,14 @@ def build_cohort_sql(
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month
+        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
-      WHERE {_SUB_COUNT} = 1
-      {_COHORT_EXCLUDE}
+      WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
       {filters}
       GROUP BY customer_id, first_product_name, cohort_month
+      HAVING has_entry_data = 1 AND has_logic_2 = 0
     )
     SELECT
       t1.cohort_month,
@@ -92,13 +77,10 @@ def build_drilldown_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
-    ad_url_params: list[str] | None = None,
-    ad_url_params_filter: list[str] | None = None,
 ) -> str:
-    """ドリルダウン分析SQL (商品名別、広告グループ別、商品カテゴリ別、広告URLパラメータ別).
+    """ドリルダウン分析SQL (商品名別、広告グループ別、商品カテゴリ別).
 
     定期商品名ドリルダウン時は revenue も取得する。
-    ad_url_params_filter: 広告URLパラメータドリルダウン時、特定の値のみに絞り込む。
     """
     table = get_table_ref(company_key)
     filters = build_filter_clause(
@@ -107,7 +89,6 @@ def build_drilldown_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
-        ad_url_params=ad_url_params,
     )
 
     # 定期商品名の場合 revenue も取得
@@ -115,24 +96,15 @@ def build_drilldown_sql(
 
     if is_product_drilldown:
         retained_columns = ",\n      ".join(
-            f"COUNT(DISTINCT IF({_SUB_COUNT_T2} = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
-            f"      SUM(IF({_SUB_COUNT_T2} = {i}, {_PAY_AMOUNT_T2}, 0)) AS revenue_{i}"
+            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
+            f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t2.`{Col.PAYMENT_AMOUNT}`, 0)) AS revenue_{i}"
             for i in range(1, MAX_RETENTION_MONTHS + 1)
         )
     else:
         retained_columns = ",\n      ".join(
-            f"COUNT(DISTINCT IF({_SUB_COUNT_T2} = {i}, t1.customer_id, NULL)) AS retained_{i}"
+            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i}"
             for i in range(1, MAX_RETENTION_MONTHS + 1)
         )
-
-    dim_expr = f"`{drilldown_column}`"
-    dim_not_null = f"`{drilldown_column}` IS NOT NULL AND `{drilldown_column}` != ''"
-
-    # 広告URLパラメータフィルタ
-    ad_url_param_filter = ""
-    if ad_url_params_filter:
-        conditions = " OR ".join(f"`{Col.AD_URL_PARAM}` = '{p}'" for p in ad_url_params_filter)
-        ad_url_param_filter = f"AND ({conditions})"
 
     return f"""
     WITH
@@ -140,15 +112,17 @@ def build_drilldown_sql(
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        {dim_expr} AS dimension_col,
-        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month
+        `{drilldown_column}` AS dimension_col,
+        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
-      WHERE {_SUB_COUNT} = 1
-      {_COHORT_EXCLUDE}
+      WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
       {filters}
-      AND {dim_not_null}
-      {ad_url_param_filter}
+      AND `{drilldown_column}` IS NOT NULL
+      AND `{drilldown_column}` != ''
       GROUP BY customer_id, first_product_name, dimension_col, cohort_month
+      HAVING has_entry_data = 1 AND has_logic_2 = 0
     )
     SELECT
       t1.dimension_col,
@@ -175,7 +149,6 @@ def build_aggregate_cohort_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
-    ad_url_params: list[str] | None = None,
 ) -> str:
     """通算コホート分析SQL.
 
@@ -189,12 +162,11 @@ def build_aggregate_cohort_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
-        ad_url_params=ad_url_params,
     )
 
     retained_cols = ",\n      ".join(
-        f"COUNT(DISTINCT IF({_SUB_COUNT_T2} = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
-        f"      SUM(IF({_SUB_COUNT_T2} = {i}, {_PAY_AMOUNT_T2}, 0)) AS revenue_{i}"
+        f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
+        f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t2.`{Col.PAYMENT_AMOUNT}`, 0)) AS revenue_{i}"
         for i in range(1, MAX_RETENTION_MONTHS + 1)
     )
 
@@ -203,12 +175,14 @@ def build_aggregate_cohort_sql(
     cohort_base AS (
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
-        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name
+        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
-      WHERE {_SUB_COUNT} = 1
-      {_COHORT_EXCLUDE}
+      WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
       {filters}
       GROUP BY customer_id, first_product_name
+      HAVING has_entry_data = 1 AND has_logic_2 = 0
     )
     SELECT
       COUNT(DISTINCT t1.customer_id) AS total_users,
@@ -233,7 +207,7 @@ def build_max_date_sql(company_key: str) -> str:
     """
     table = get_table_ref(company_key)
     return f"""
-    SELECT MAX({_TS}) AS max_date
+    SELECT MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS max_date
     FROM {table}
     WHERE `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
       AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
@@ -254,9 +228,9 @@ def build_upsell_sql(
     table = get_table_ref(company_key)
     date_filter = ""
     if date_from:
-        date_filter += f"\n        AND {_TS} >= '{date_from}'"
+        date_filter += f"\n        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= '{date_from}'"
     if date_to:
-        date_filter += f"\n        AND {_TS} <= '{date_to}'"
+        date_filter += f"\n        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= '{date_to}'"
 
     return f"""
     WITH
@@ -308,19 +282,19 @@ def build_upsell_rate_sql(
     period_start_expr = "p.period_start"
     period_end_expr = "p.period_end"
     if date_from:
-        period_start_expr = f"GREATEST(p.period_start, TIMESTAMP('{date_from}'))"
+        period_start_expr = f"GREATEST(p.period_start, '{date_from}')"
     if date_to:
-        period_end_expr = f"LEAST(p.period_end, TIMESTAMP('{date_to}'))"
+        period_end_expr = f"LEAST(p.period_end, '{date_to}')"
 
     return f"""
     WITH
     ref_period AS (
       SELECT
-        MIN({_TS}) AS period_start,
-        MAX({_TS}) AS period_end
+        MIN(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_start,
+        MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_end
       FROM {table}
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({period_ref_in})
-        AND {_SUB_COUNT} = 1
+        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
     ),
@@ -336,22 +310,22 @@ def build_upsell_rate_sql(
       FROM {table}
       CROSS JOIN effective_period ep
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({numerator_in})
-        AND {_SUB_COUNT} = 1
+        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-        AND {_TS} >= ep.eff_start
-        AND {_TS} <= ep.eff_end
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
     ),
     denominator_first AS (
       SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS denominator_count
       FROM {table}
       CROSS JOIN effective_period ep
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({denominator_in})
-        AND {_SUB_COUNT} = 1
+        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-        AND {_TS} >= ep.eff_start
-        AND {_TS} <= ep.eff_end
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
     )
     SELECT
       nu.numerator_count,
@@ -387,19 +361,19 @@ def build_upsell_rate_monthly_sql(
     period_start_expr = "p.period_start"
     period_end_expr = "p.period_end"
     if date_from:
-        period_start_expr = f"GREATEST(p.period_start, TIMESTAMP('{date_from}'))"
+        period_start_expr = f"GREATEST(p.period_start, '{date_from}')"
     if date_to:
-        period_end_expr = f"LEAST(p.period_end, TIMESTAMP('{date_to}'))"
+        period_end_expr = f"LEAST(p.period_end, '{date_to}')"
 
     return f"""
     WITH
     ref_period AS (
       SELECT
-        MIN({_TS}) AS period_start,
-        MAX({_TS}) AS period_end
+        MIN(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_start,
+        MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS period_end
       FROM {table}
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({period_ref_in})
-        AND {_SUB_COUNT} = 1
+        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
     ),
@@ -412,30 +386,30 @@ def build_upsell_rate_monthly_sql(
     ),
     monthly_numerator AS (
       SELECT
-        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month,
+        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
         COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS numerator_count
       FROM {table}
       CROSS JOIN effective_period ep
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({numerator_in})
-        AND {_SUB_COUNT} = 1
+        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-        AND {_TS} >= ep.eff_start
-        AND {_TS} <= ep.eff_end
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
       GROUP BY cohort_month
     ),
     monthly_denominator AS (
       SELECT
-        FORMAT_TIMESTAMP('%Y-%m', {_TS}) AS cohort_month,
+        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
         COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS denominator_count
       FROM {table}
       CROSS JOIN effective_period ep
       WHERE `{Col.SUBSCRIPTION_PRODUCT_NAME}` IN ({denominator_in})
-        AND {_SUB_COUNT} = 1
+        AND SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
         AND `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-        AND {_TS} >= ep.eff_start
-        AND {_TS} <= ep.eff_end
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
+        AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
       GROUP BY cohort_month
     )
     SELECT
@@ -449,127 +423,4 @@ def build_upsell_rate_monthly_sql(
     FROM monthly_denominator de
     FULL OUTER JOIN monthly_numerator nu ON de.cohort_month = nu.cohort_month
     ORDER BY cohort_month
-    """
-
-
-def _cohort_base_cte(table: str, filters: str) -> str:
-    """cohort_base CTEの共通定義."""
-    return f"""
-    cohort_base AS (
-      SELECT
-        `{Col.CUSTOMER_ID}` AS customer_id,
-        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month
-      FROM {table}
-      WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
-      {_COHORT_EXCLUDE}
-      {filters}
-      GROUP BY customer_id, first_product_name, cohort_month
-    )
-    """
-
-
-def build_cohort_customer_ids_sql(
-    company_key: str,
-    cohort_month: str,
-    order_count: int | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    product_categories: list[str] | None = None,
-    ad_groups: list[str] | None = None,
-    product_names: list[str] | None = None,
-    ad_url_params: list[str] | None = None,
-) -> str:
-    """コホート月の顧客IDリストを取得するSQL.
-
-    order_count=None: 新規顧客数全員（cohort_base全員）を返す。
-    order_count指定: その回数のshipped+completed顧客IDを返す。
-    """
-    table = get_table_ref(company_key)
-    filters = build_filter_clause(
-        date_from=date_from, date_to=date_to,
-        product_categories=product_categories,
-        ad_groups=ad_groups, product_names=product_names,
-        ad_url_params=ad_url_params,
-    )
-    cte = _cohort_base_cte(table, filters)
-
-    if order_count is None:
-        # 新規顧客数全員
-        return f"""
-        WITH {cte}
-        SELECT DISTINCT t1.customer_id
-        FROM cohort_base t1
-        WHERE t1.cohort_month = '{cohort_month}'
-        ORDER BY customer_id
-        """
-    else:
-        # 指定回数のshipped+completed顧客
-        return f"""
-        WITH {cte}
-        SELECT DISTINCT t1.customer_id
-        FROM cohort_base t1
-        INNER JOIN {table} t2
-          ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
-          AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
-          AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
-          AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-          AND SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {order_count}
-        WHERE t1.cohort_month = '{cohort_month}'
-        ORDER BY customer_id
-        """
-
-
-def build_cohort_customer_diff_sql(
-    company_key: str,
-    cohort_month: str,
-    base_order_count: int | None,
-    subtract_order_count: int | None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    product_categories: list[str] | None = None,
-    ad_groups: list[str] | None = None,
-    product_names: list[str] | None = None,
-    ad_url_params: list[str] | None = None,
-) -> str:
-    """2つの対象の差分（base - subtract）の顧客IDを取得するSQL.
-
-    order_count=None は新規顧客数全員を意味する。
-    """
-    table = get_table_ref(company_key)
-    filters = build_filter_clause(
-        date_from=date_from, date_to=date_to,
-        product_categories=product_categories,
-        ad_groups=ad_groups, product_names=product_names,
-        ad_url_params=ad_url_params,
-    )
-    cte = _cohort_base_cte(table, filters)
-
-    def _id_subquery(oc: int | None) -> str:
-        if oc is None:
-            return f"""
-            SELECT DISTINCT t1.customer_id
-            FROM cohort_base t1
-            WHERE t1.cohort_month = '{cohort_month}'
-            """
-        return f"""
-            SELECT DISTINCT t1.customer_id
-            FROM cohort_base t1
-            INNER JOIN {table} t2
-              ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
-              AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
-              AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
-              AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-              AND SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {oc}
-            WHERE t1.cohort_month = '{cohort_month}'
-            """
-
-    return f"""
-    WITH {cte},
-    base_ids AS ({_id_subquery(base_order_count)}),
-    subtract_ids AS ({_id_subquery(subtract_order_count)})
-    SELECT DISTINCT b.customer_id
-    FROM base_ids b
-    WHERE b.customer_id NOT IN (SELECT customer_id FROM subtract_ids)
-    ORDER BY b.customer_id
     """

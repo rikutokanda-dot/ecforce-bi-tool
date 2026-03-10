@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 
 from src.constants import Col, PROJECT_ID
@@ -73,81 +74,8 @@ def build_chirashi_upsell_rate_sql(
     df = _date_filter(date_from, date_to)
 
     return f"""
-WITH chirashi_recipients AS (
-  -- チラシを送った顧客（顧客ID × チラシ名で重複除外）
-  SELECT
-    c.chirashi_name,
-    a.`{Col.CUSTOMER_ID}` AS customer_id,
-    MIN(SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)) AS chirashi_order_count,
-    ANY_VALUE(cfg.target_product) AS target_product
-  FROM {chirashi} c
-  JOIN {config} cfg
-    ON c.chirashi_name = cfg.chirashi_name
-    AND cfg.company = '{company_key}'
-  JOIN {integrated} a
-    ON c.chirashi_order_number = a.`受注_受注番号`
-  WHERE cfg.target_product IS NOT NULL
-    AND TRIM(cfg.target_product) != ''
-    AND a.`{Col.ORDER_STATUS}` = 'shipped'{df}
-  GROUP BY 1, 2
-),
-
-switched AS (
-  -- チラシ同梱回より後の回でターゲット商品に切り替えた顧客
-  SELECT DISTINCT
-    cr.chirashi_name,
-    cr.customer_id
-  FROM chirashi_recipients cr
-  JOIN {integrated} a
-    ON cr.customer_id = a.`{Col.CUSTOMER_ID}`
-  WHERE EXISTS (
-    SELECT 1 FROM UNNEST(SPLIT(cr.target_product, ',')) AS tp
-    WHERE STRPOS(a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`, TRIM(tp)) > 0
-  )
-  AND SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) > cr.chirashi_order_count
-  AND a.`{Col.ORDER_STATUS}` = 'shipped'
-)
-
-SELECT
-  cr.chirashi_name,
-  COUNT(DISTINCT cr.customer_id) AS total_recipients,
-  COUNT(DISTINCT s.customer_id)  AS switched_count,
-  ROUND(
-    SAFE_DIVIDE(
-      COUNT(DISTINCT s.customer_id),
-      COUNT(DISTINCT cr.customer_id)
-    ) * 100, 1
-  ) AS upsell_rate
-FROM chirashi_recipients cr
-LEFT JOIN switched s
-  ON cr.chirashi_name = s.chirashi_name
-  AND cr.customer_id = s.customer_id
-GROUP BY 1
-ORDER BY 1
-"""
-
-
-def build_chirashi_frequency_rate_sql(
-    company_key: str,
-    date_from: date | None = None,
-    date_to: date | None = None,
-) -> str:
-    """F(回数)別転換率を算出するSQL.
-
-    N回目に投函した顧客のうち、N+1回目にターゲット商品に切り替えた顧客の割合。
-
-    Returns:
-        SQL文字列。結果カラム:
-        chirashi_name, order_count, total_at_n, switched_at_next, conversion_rate
-    """
-    chirashi = _chirashi_ref(company_key)
-    config = _config_ref(company_key)
-    integrated = _integrated_ref(company_key)
-    df = _date_filter(date_from, date_to)
-
-    return f"""
-WITH chirashi_orders AS (
-  -- チラシが投函された受注（顧客 × チラシ名 × 定期回数）
+WITH chirashi_all AS (
+  -- チラシ投函受注（重複排除前の全レコード）
   SELECT
     c.chirashi_name,
     a.`{Col.CUSTOMER_ID}` AS customer_id,
@@ -164,39 +92,168 @@ WITH chirashi_orders AS (
     AND a.`{Col.ORDER_STATUS}` = 'shipped'{df}
 ),
 
-switched_next AS (
-  -- N回目投函 → N+1回目にターゲット商品に切り替えた顧客
+chirashi_recipients AS (
+  -- 顧客ごと重複除外
+  SELECT
+    chirashi_name,
+    customer_id,
+    MIN(order_count) AS chirashi_order_count,
+    ANY_VALUE(target_product) AS target_product
+  FROM chirashi_all
+  GROUP BY 1, 2
+),
+
+delivery_counts AS (
+  -- チラシ名ごとの投函数（重複含む全配布数）
+  SELECT chirashi_name, COUNT(*) AS total_deliveries
+  FROM chirashi_all
+  GROUP BY 1
+),
+
+switched AS (
   SELECT DISTINCT
-    co.chirashi_name,
-    co.order_count,
-    co.customer_id
-  FROM chirashi_orders co
+    cr.chirashi_name,
+    cr.customer_id
+  FROM chirashi_recipients cr
   JOIN {integrated} a
-    ON co.customer_id = a.`{Col.CUSTOMER_ID}`
-  WHERE SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = co.order_count + 1
-    AND a.`{Col.ORDER_STATUS}` = 'shipped'
+    ON cr.customer_id = a.`{Col.CUSTOMER_ID}`
+  WHERE EXISTS (
+    SELECT 1 FROM UNNEST(SPLIT(cr.target_product, ',')) AS tp
+    WHERE STRPOS(a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`, TRIM(tp)) > 0
+  )
+  AND SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) > cr.chirashi_order_count
+  AND a.`{Col.ORDER_STATUS}` = 'shipped'
+)
+
+SELECT
+  cr.chirashi_name,
+  ANY_VALUE(dc.total_deliveries) AS total_deliveries,
+  COUNT(DISTINCT cr.customer_id) AS total_recipients,
+  COUNT(DISTINCT s.customer_id)  AS switched_count,
+  ROUND(
+    SAFE_DIVIDE(
+      COUNT(DISTINCT s.customer_id),
+      COUNT(DISTINCT cr.customer_id)
+    ) * 100, 1
+  ) AS upsell_rate
+FROM chirashi_recipients cr
+LEFT JOIN switched s
+  ON cr.chirashi_name = s.chirashi_name
+  AND cr.customer_id = s.customer_id
+LEFT JOIN delivery_counts dc
+  ON cr.chirashi_name = dc.chirashi_name
+GROUP BY 1
+ORDER BY 1
+"""
+
+
+def build_chirashi_frequency_rate_sql(
+    company_key: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> str:
+    """F(回数)別転換率を算出するSQL.
+
+    各顧客を1回だけカウント（最初のチラシ基準、最初の切替回数で分類）。
+    継続率タブと同じ定義を使用し、人数が一致する。
+
+    Returns:
+        SQL文字列。結果カラム:
+        chirashi_name, order_count, total_at_n, switched_at_next, conversion_rate
+    """
+    chirashi = _chirashi_ref(company_key)
+    config = _config_ref(company_key)
+    integrated = _integrated_ref(company_key)
+    df = _date_filter(date_from, date_to)
+
+    return f"""
+WITH chirashi_orders AS (
+  -- チラシ投函受注（投函回ごと、重複排除しない → 投函数の母体）
+  SELECT
+    c.chirashi_name,
+    a.`{Col.CUSTOMER_ID}` AS customer_id,
+    SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) AS order_count,
+    cfg.target_product
+  FROM {chirashi} c
+  JOIN {config} cfg
+    ON c.chirashi_name = cfg.chirashi_name
+    AND cfg.company = '{company_key}'
+  JOIN {integrated} a
+    ON c.chirashi_order_number = a.`受注_受注番号`
+  WHERE cfg.target_product IS NOT NULL
+    AND TRIM(cfg.target_product) != ''
+    AND a.`{Col.ORDER_STATUS}` = 'shipped'{df}
+),
+
+-- 顧客ごと最初のチラシ（切替判定の基準、継続率タブと同じ定義）
+chirashi_recipients AS (
+  SELECT
+    chirashi_name,
+    customer_id,
+    MIN(order_count) AS chirashi_order_count,
+    ANY_VALUE(target_product) AS target_product
+  FROM chirashi_orders
+  GROUP BY 1, 2
+),
+
+customer_orders AS (
+  SELECT
+    cr.chirashi_name,
+    cr.customer_id,
+    cr.chirashi_order_count,
+    cr.target_product,
+    SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) AS order_count,
+    a.`{Col.SUBSCRIPTION_PRODUCT_NAME}` AS sub_product_name
+  FROM chirashi_recipients cr
+  JOIN {integrated} a
+    ON cr.customer_id = a.`{Col.CUSTOMER_ID}`
+  WHERE a.`{Col.ORDER_STATUS}` = 'shipped'
+),
+
+-- 各顧客の最初の切替回数（継続率タブと同じ定義）
+first_switch AS (
+  SELECT
+    chirashi_name,
+    customer_id,
+    MIN(order_count) AS switch_order_count
+  FROM customer_orders
+  WHERE order_count > chirashi_order_count
     AND EXISTS (
-      SELECT 1 FROM UNNEST(SPLIT(co.target_product, ',')) AS tp
-      WHERE STRPOS(a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`, TRIM(tp)) > 0
+      SELECT 1 FROM UNNEST(SPLIT(target_product, ',')) AS tp
+      WHERE STRPOS(sub_product_name, TRIM(tp)) > 0
     )
+  GROUP BY 1, 2
+),
+
+-- 各切替を直前のチラシ投函に紐付け（最も近い投函回）
+attributed AS (
+  SELECT
+    co.chirashi_name,
+    fs.customer_id,
+    MAX(co.order_count) AS attributed_chirashi_order
+  FROM chirashi_orders co
+  JOIN first_switch fs
+    ON co.chirashi_name = fs.chirashi_name
+    AND co.customer_id = fs.customer_id
+    AND co.order_count < fs.switch_order_count
+  GROUP BY 1, 2
 )
 
 SELECT
   co.chirashi_name,
   co.order_count,
   COUNT(DISTINCT co.customer_id) AS total_at_n,
-  COUNT(DISTINCT sn.customer_id) AS switched_at_next,
+  COUNT(DISTINCT a.customer_id) AS switched_at_next,
   ROUND(
     SAFE_DIVIDE(
-      COUNT(DISTINCT sn.customer_id),
+      COUNT(DISTINCT a.customer_id),
       COUNT(DISTINCT co.customer_id)
     ) * 100, 1
   ) AS conversion_rate
 FROM chirashi_orders co
-LEFT JOIN switched_next sn
-  ON co.chirashi_name = sn.chirashi_name
-  AND co.order_count = sn.order_count
-  AND co.customer_id = sn.customer_id
+LEFT JOIN attributed a
+  ON co.chirashi_name = a.chirashi_name
+  AND co.order_count = a.attributed_chirashi_order
 GROUP BY 1, 2
 ORDER BY 1, 2
 """
@@ -220,13 +277,18 @@ def _product_cycles_cte(product_cycles: dict | None) -> tuple[str, int]:
 
     rows = []
     for p in products:
-        # cycle2キーが存在しない = 未設定 → CTEに含めない（NULLマッチ→実績ベース）
-        if "cycle2" not in p or p["cycle2"] is None:
+        # cycle2キーが存在しない / None / NaN → CTEに含めない（NULLマッチ→実績ベース）
+        c2_val = p.get("cycle2")
+        if c2_val is None or (isinstance(c2_val, float) and math.isnan(c2_val)):
             continue
+        c1_val = p.get("cycle1")
+        if c1_val is None or (isinstance(c1_val, float) and math.isnan(c1_val)):
+            c1_val = c2_val  # cycle1未設定ならcycle2をフォールバック
         name = p["name"].replace("'", "''")
-        c2 = int(p["cycle2"])
+        c1 = int(c1_val)
+        c2 = int(c2_val)
         rows.append(
-            f"STRUCT('{name}' AS name, {c2} AS cycle2)"
+            f"STRUCT('{name}' AS name, {c1} AS cycle1, {c2} AS cycle2)"
         )
     if not rows:
         return "", dc2
@@ -309,7 +371,7 @@ ORDER BY 2 DESC
 def build_chirashi_retention_sql(
     company_key: str,
     chirashi_name: str | None = None,
-    max_n: int = 24,
+    max_days: int = 365,
     date_from: date | None = None,
     date_to: date | None = None,
     product_cycles: dict | None = None,
@@ -322,13 +384,14 @@ def build_chirashi_retention_sql(
 
     3回目で切り替えた人 → 1〜3回目は自動的に100%
 
-    eligible判定は商品マスタのcycle2を使用:
-      expected_max = switch_order_count + FLOOR(days_since_switch / cycle2)
+    eligible判定は商品マスタのcycle2を使用（初回起算の累計日数ベース）:
+      残り日数 = max_days - (切替日 - 初回日)
+      expected_max = switch_order_count + FLOOR(残り日数 / cycle2)
 
     Args:
         company_key: 会社キー
         chirashi_name: フィルタするチラシ名（Noneなら全チラシ）
-        max_n: 最大定期回数
+        max_days: 期間（日数）。この期間内で到達可能な回数まで表示。
         date_from: 受注日フィルタ開始
         date_to: 受注日フィルタ終了
         product_cycles: 商品サイクルマスタ (load_product_cycles()の戻り値)
@@ -348,10 +411,24 @@ def build_chirashi_retention_sql(
 
     pc_cte, default_cycle2 = _product_cycles_cte(product_cycles)
 
+    # max_days から max_n を自動算出
+    min_cycle2 = default_cycle2
+    if product_cycles:
+        products = product_cycles.get("products", [])
+        cycles = [
+            p["cycle2"]
+            for p in products
+            if isinstance(p.get("cycle2"), (int, float)) and p["cycle2"] > 0
+        ]
+        if cycles:
+            min_cycle2 = min(cycles)
+    max_n = max_days // max(min_cycle2, 1) + 20  # +20 for switch_order_count offset
+    max_n = min(max_n, 48)
+
     retained_parts = []
     for i in range(1, max_n + 1):
         retained_parts.append(
-            f"COUNT(DISTINCT CASE WHEN max_shipped >= {i} THEN customer_id END) AS retained_{i}"
+            f"COUNT(DISTINCT CASE WHEN max_shipped >= {i} AND expected_max >= {i} THEN customer_id END) AS retained_{i}"
         )
         retained_parts.append(
             f"COUNT(DISTINCT CASE WHEN expected_max >= {i} THEN customer_id END) AS eligible_{i}"
@@ -391,20 +468,34 @@ WITH {pc_prefix}chirashi_recipients AS (
   GROUP BY 1, 2
 ),
 
-switched_with_timing AS (
+-- all_integratedへのJOINは1回だけ: 必要カラムのみ取得してCTEに保持
+customer_orders AS (
   SELECT
     cr.chirashi_name,
     cr.customer_id,
-    MIN(SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)) AS switch_order_count
+    cr.chirashi_order_count,
+    cr.target_product,
+    SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) AS order_count,
+    a.`{Col.SUBSCRIPTION_PRODUCT_NAME}` AS sub_product_name,
+    a.`{Col.PRODUCT_NAME}` AS order_product_name,
+    SAFE_CAST(a.`{Col.SALES_DATE}` AS TIMESTAMP) AS sales_date
   FROM chirashi_recipients cr
   JOIN {integrated} a
     ON cr.customer_id = a.`{Col.CUSTOMER_ID}`
-  WHERE EXISTS (
-    SELECT 1 FROM UNNEST(SPLIT(cr.target_product, ',')) AS tp
-    WHERE STRPOS(a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`, TRIM(tp)) > 0
-  )
-  AND SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) > cr.chirashi_order_count
-  AND a.`{Col.ORDER_STATUS}` = 'shipped'
+  WHERE a.`{Col.ORDER_STATUS}` = 'shipped'
+),
+
+switched_with_timing AS (
+  SELECT
+    chirashi_name,
+    customer_id,
+    MIN(order_count) AS switch_order_count
+  FROM customer_orders
+  WHERE order_count > chirashi_order_count
+    AND EXISTS (
+      SELECT 1 FROM UNNEST(SPLIT(target_product, ',')) AS tp
+      WHERE STRPOS(sub_product_name, TRIM(tp)) > 0
+    )
   GROUP BY 1, 2
 ),
 
@@ -413,52 +504,53 @@ switched_max AS (
     s.chirashi_name,
     s.customer_id,
     s.switch_order_count,
-    MAX(SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64)) AS max_shipped,
-    -- 切替回の売上日（切替時点を基準にeligible判定する）
-    MIN(CASE
-      WHEN SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = s.switch_order_count
-      THEN SAFE_CAST(a.`{Col.SALES_DATE}` AS TIMESTAMP)
-    END) AS switch_date,
-    -- 切替後の定期商品名（商品マスタのcycle2を引くため）
-    ANY_VALUE(CASE
-      WHEN SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = s.switch_order_count
-      THEN a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`
-    END) AS switched_product_name
+    MAX(co.order_count) AS max_shipped,
+    MIN(CASE WHEN co.order_count = s.switch_order_count THEN co.sales_date END) AS switch_date,
+    MIN(co.sales_date) AS first_order_date,
+    ANY_VALUE(CASE WHEN co.order_count = s.switch_order_count THEN co.sub_product_name END) AS switched_product_name,
+    ANY_VALUE(CASE WHEN co.order_count = s.switch_order_count - 1 THEN co.order_product_name END) AS original_product_name
   FROM switched_with_timing s
-  JOIN {integrated} a
-    ON s.customer_id = a.`{Col.CUSTOMER_ID}`
-  WHERE a.`{Col.ORDER_STATUS}` = 'shipped'
+  JOIN customer_orders co
+    ON s.chirashi_name = co.chirashi_name
+    AND s.customer_id = co.customer_id
   GROUP BY 1, 2, 3
 ),
 
 with_eligible AS (
   SELECT
     sm.*,
-    -- cycle2>0: 切替日からの経過日数÷cycle2で到達可能回数を算出（実績とのMAX）
-    -- cycle2=0またはマスタ未登録: 実績(max_shipped)のみ使用
+    COALESCE(pc_pre.cycle1, 0) AS pre_cycle1,
+    COALESCE(pc_pre.cycle2, 0) AS pre_cycle2,
+    COALESCE(pc.cycle1, 0) AS post_cycle1,
+    COALESCE(pc.cycle2, 0) AS rep_cycle2,
     CASE
-      WHEN COALESCE(pc.cycle2, 0) > 0 THEN GREATEST(
-        sm.max_shipped,
+      WHEN COALESCE(pc.cycle2, 0) > 0 THEN
         sm.switch_order_count + CAST(
           FLOOR(
             SAFE_DIVIDE(
-              DATE_DIFF(CURRENT_DATE(), DATE(sm.switch_date), DAY),
+              LEAST(
+                DATE_DIFF(CURRENT_DATE(), DATE(sm.switch_date), DAY),
+                GREATEST({max_days} - DATE_DIFF(DATE(sm.switch_date), DATE(sm.first_order_date), DAY), 0)
+              ),
               pc.cycle2
             )
           ) AS INT64
         )
-      )
       ELSE sm.max_shipped
     END AS expected_max
   FROM switched_max sm
   LEFT JOIN product_cycles pc
     ON sm.switched_product_name = pc.name
+  LEFT JOIN product_cycles pc_pre
+    ON sm.original_product_name = pc_pre.name
 )
 
 SELECT
   chirashi_name,
   switch_order_count,
   COUNT(DISTINCT customer_id) AS total_switched,
+  APPROX_TOP_COUNT(original_product_name, 1)[OFFSET(0)].value AS original_product_name,
+  APPROX_TOP_COUNT(switched_product_name, 1)[OFFSET(0)].value AS switched_product_name,
   {retained_cols}
 FROM with_eligible
 GROUP BY 1, 2
