@@ -43,7 +43,7 @@ def build_cohort_sql(
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
-        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
@@ -113,7 +113,7 @@ def build_drilldown_sql(
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
         `{drilldown_column}` AS dimension_col,
-        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
@@ -386,7 +386,7 @@ def build_upsell_rate_monthly_sql(
     ),
     monthly_numerator AS (
       SELECT
-        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
         COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS numerator_count
       FROM {table}
       CROSS JOIN effective_period ep
@@ -400,7 +400,7 @@ def build_upsell_rate_monthly_sql(
     ),
     monthly_denominator AS (
       SELECT
-        FORMAT_DATE('%Y-%m', `{Col.SUBSCRIPTION_CREATED_AT}`) AS cohort_month,
+        FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
         COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS denominator_count
       FROM {table}
       CROSS JOIN effective_period ep
