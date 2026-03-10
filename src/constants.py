@@ -26,6 +26,7 @@ class Col:
     AD_URL_PARAM = "初回受注_広告url_パラメータ"
     SUBSCRIPTION_STATUS = "定期受注_ステータス"
     SALES_DATE = "受注_売上日時"
+    ORDER_CREATED_DATE = "受注_作成日時_yyyymmdd"
 
 
 class Status:

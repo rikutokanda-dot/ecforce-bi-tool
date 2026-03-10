@@ -114,8 +114,8 @@ with tab_cycles:
             num_rows="dynamic",
             column_config={
                 "name": st.column_config.TextColumn("商品名", required=True, width="large"),
-                "cycle1": st.column_config.NumberColumn("初回→2回目 (日)", min_value=1, default=30),
-                "cycle2": st.column_config.NumberColumn("2回目以降 (日)", min_value=1, default=30),
+                "cycle1": st.column_config.NumberColumn("初回→2回目 (日)", min_value=0, default=30),
+                "cycle2": st.column_config.NumberColumn("2回目以降 (日)", min_value=0, default=30),
             },
             use_container_width=True,
             height=600,
