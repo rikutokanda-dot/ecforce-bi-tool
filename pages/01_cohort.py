@@ -354,8 +354,8 @@ main_tab_drilldown, main_tab_aggregate, main_tab_monthly, main_tab_upsell = st.t
 # ドリルダウンタブ — サブタブで軸を切り替え
 # =====================================================================
 with main_tab_drilldown:
-    dd_tab_product, dd_tab_adgroup, dd_tab_category = st.tabs(
-        ["定期商品名", "広告グループ", "商品カテゴリ"]
+    dd_tab_product, dd_tab_adgroup, dd_tab_adurl, dd_tab_category = st.tabs(
+        ["定期商品名", "広告グループ", "広告URLパラメータ", "商品カテゴリ"]
     )
 
     # ========== 定期商品名 ==========
@@ -447,6 +447,36 @@ with main_tab_drilldown:
                 for grp_name in dim_ag:
                     with st.expander(f"{grp_name}", expanded=False):
                         summary = build_dimension_summary_table(dd_df_ag, grp_name)
+                        if summary.empty:
+                            st.info("データがありません。")
+                            continue
+                        st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    # ========== 広告URLパラメータ ==========
+    with dd_tab_adurl:
+        if st.button("表示する", key="btn_dd_adurl", type="primary"):
+            st.session_state["dd_adurl_shown"] = True
+        if not st.session_state.get("dd_adurl_shown"):
+            st.info("フィルタを設定して「表示する」を押してください。")
+        else:
+            dd_sql_au = build_drilldown_sql(
+                drilldown_column=Col.AD_URL_PARAM, **filter_params
+            )
+            try:
+                dd_df_au = execute_query(client, dd_sql_au)
+            except Exception as e:
+                st.error(f"BigQueryクエリ実行エラー: {e}")
+                dd_df_au = pd.DataFrame()
+
+            if dd_df_au.empty:
+                st.info("該当するデータが見つかりませんでした。")
+            else:
+                dim_au = sorted(dd_df_au["dimension_col"].unique())
+                st.info(f"**広告URLパラメータ別**: {len(dim_au)} 件")
+                st.caption(f"データカットオフ日: {data_cutoff_date}")
+                for au_name in dim_au:
+                    with st.expander(f"{au_name}", expanded=False):
+                        summary = build_dimension_summary_table(dd_df_au, au_name)
                         if summary.empty:
                             st.info("データがありません。")
                             continue
