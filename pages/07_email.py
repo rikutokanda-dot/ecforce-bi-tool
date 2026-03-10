@@ -169,9 +169,9 @@ with tab_upsell:
 
     if not overall_df.empty:
         row = overall_df.iloc[0]
-        total = int(row["total_denominator"])
-        switched = int(row["total_switched"])
-        rate = float(row["upsell_rate"])
+        total = int(row["total_denominator"]) if pd.notna(row["total_denominator"]) else 0
+        switched = int(row["total_switched"]) if pd.notna(row["total_switched"]) else 0
+        rate = float(row["upsell_rate"]) if pd.notna(row["upsell_rate"]) else 0.0
 
         k1, k2, k3 = st.columns(3)
         k1.metric("分母（対象者数）", f"{total:,}")
