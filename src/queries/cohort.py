@@ -97,7 +97,7 @@ def build_drilldown_sql(
     if is_product_drilldown:
         retained_columns = ",\n      ".join(
             f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
-            f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t2.`{Col.PAYMENT_AMOUNT}`, 0)) AS revenue_{i}"
+            f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_{i}"
             for i in range(1, MAX_RETENTION_MONTHS + 1)
         )
     else:
@@ -166,7 +166,7 @@ def build_aggregate_cohort_sql(
 
     retained_cols = ",\n      ".join(
         f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
-        f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t2.`{Col.PAYMENT_AMOUNT}`, 0)) AS revenue_{i}"
+        f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_{i}"
         for i in range(1, MAX_RETENTION_MONTHS + 1)
     )
 
