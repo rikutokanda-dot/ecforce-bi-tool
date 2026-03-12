@@ -27,13 +27,19 @@ def _build_select_columns(
     cutoff_date: str | None,
     include_revenue: bool = False,
 ) -> str:
-    """retained/denom/revenue カラムのSELECT式を構築.
+    """retained/denom/surv_denom/cont_num/revenue カラムのSELECT式を構築.
+
+    残存率の定義:
+      1回目: 分母=total_users, 分子=shipped+completedの1回目
+      N回目(N≥2): 時間適格チェック付き (定期受注作成日+10ベース)
+        分母(surv_denom_N) = 定期受注作成日+10+cycle1+cycle2*(N-2) < cutoff の人数
+        分子(retained_N)   = 同条件 かつ N回目shipped+completed
 
     継続率の定義:
       1回目: 分母=total_users, 分子=shipped+completedの1回目
-      N回目(N≥2): 時間適格チェック付き
-        分母(denom_N) = 定期受注作成日+10+cycle1+cycle2*(N-2) < cutoff かつ N-1回目shipped+completed
-        分子(retained_N) = 同条件 かつ N回目shipped+completed
+      N回目(N≥2): 時間適格チェック付き (1回目売上日ベース)
+        分母(denom_N)    = 1回目売上日+cycle1+cycle2*(N-2) < cutoff かつ N-1回目shipped+completed
+        分子(cont_num_N) = 同条件 かつ N回目shipped+completed
     """
     parts: list[str] = []
 
@@ -48,31 +54,56 @@ def _build_select_columns(
             f" SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_1"
         )
 
-    # -- 2回目以降: 時間適格チェック付き --
+    # -- 2回目以降: 残存率用(定期受注作成日+10) + 継続率用(1回目売上日) --
     for i in range(2, MAX_RETENTION_MONTHS + 1):
-        offset = int(10 + cycle1 + cycle2 * (i - 2))
-        tc = ""
+        surv_offset = int(10 + cycle1 + cycle2 * (i - 2))
+        cont_offset = int(cycle1 + cycle2 * (i - 2))
+
+        # 残存率用の時間チェック (定期受注作成日+10ベース)
+        surv_tc = ""
         if cutoff_date:
-            tc = (
+            surv_tc = (
                 f"\n          AND DATE_ADD(DATE(t1.subscription_created_at),"
-                f" INTERVAL {offset} DAY) < DATE('{cutoff_date}')"
+                f" INTERVAL {surv_offset} DAY) < DATE('{cutoff_date}')"
             )
 
-        # retained_i: 時間適格 かつ i回目 shipped+completed
+        # 継続率用の時間チェック (1回目売上日ベース)
+        cont_tc = ""
+        if cutoff_date:
+            cont_tc = (
+                f"\n          AND DATE_ADD(DATE(t1.first_sales_date),"
+                f" INTERVAL {cont_offset} DAY) < DATE('{cutoff_date}')"
+            )
+
+        # --- 残存率カラム ---
+        # surv_denom_i: 残存率の分母 (定期受注作成日+10ベースで時間適格な人数)
         parts.append(
-            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{tc},"
+            f"COUNT(DISTINCT IF(1=1{surv_tc},"
+            f" t1.customer_id, NULL)) AS surv_denom_{i}"
+        )
+        # retained_i: 残存率の分子 (同時間チェック かつ i回目 shipped+completed)
+        parts.append(
+            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{surv_tc},"
             f" t1.customer_id, NULL)) AS retained_{i}"
         )
-        if include_revenue:
-            parts.append(
-                f"SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{tc},"
-                f" SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_{i}"
-            )
-        # denom_i: 時間適格 かつ (i-1)回目 shipped+completed (継続率の分母)
+
+        # --- 継続率カラム ---
+        # denom_i: 継続率の分母 (1回目売上日ベースで時間適格 かつ N-1回目shipped)
         parts.append(
-            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i - 1}{tc},"
+            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i - 1}{cont_tc},"
             f" t1.customer_id, NULL)) AS denom_{i}"
         )
+        # cont_num_i: 継続率の分子 (1回目売上日ベースで時間適格 かつ N回目shipped)
+        parts.append(
+            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{cont_tc},"
+            f" t1.customer_id, NULL)) AS cont_num_{i}"
+        )
+
+        if include_revenue:
+            parts.append(
+                f"SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{surv_tc},"
+                f" SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_{i}"
+            )
 
     return ",\n      ".join(parts)
 
@@ -109,6 +140,8 @@ def build_cohort_sql(
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
         MIN(SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS subscription_created_at,
+        MIN(IF(`{Col.ORDER_STATUS}` = '{Status.SHIPPED}' AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}',
+            SAFE_CAST(`{Col.SALES_DATE}` AS TIMESTAMP), NULL)) AS first_sales_date,
         FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
@@ -177,6 +210,8 @@ def build_drilldown_sql(
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
         `{drilldown_column}` AS dimension_col,
         MIN(SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS subscription_created_at,
+        MIN(IF(`{Col.ORDER_STATUS}` = '{Status.SHIPPED}' AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}',
+            SAFE_CAST(`{Col.SALES_DATE}` AS TIMESTAMP), NULL)) AS first_sales_date,
         FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
@@ -325,6 +360,8 @@ def build_aggregate_cohort_sql(
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
         MIN(SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS subscription_created_at,
+        MIN(IF(`{Col.ORDER_STATUS}` = '{Status.SHIPPED}' AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}',
+            SAFE_CAST(`{Col.SALES_DATE}` AS TIMESTAMP), NULL)) AS first_sales_date,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}

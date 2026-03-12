@@ -47,22 +47,35 @@ def build_retention_table(
         col = f"retained_{i}"
         if col not in df.columns:
             break
-        total = df["total_users"].astype(float)
         retained = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-        counts = retained.astype(int).tolist()
-        rates = (retained / total * 100).round(1).tolist()
+        # 残存率の分母: 1回目=total_users, N≥2=surv_denom_N
+        if i == 1:
+            surv_denom = df["total_users"].astype(float)
+        else:
+            sd_col = f"surv_denom_{i}"
+            if sd_col in df.columns:
+                surv_denom = pd.to_numeric(df[sd_col], errors="coerce").fillna(0)
+            else:
+                surv_denom = df["total_users"].astype(float)
 
-        # 未定人数: 前回shipped/completedだが時間適格でない人数
-        # 1回目は未定なし、2回目以降: retained_{N-1} - denom_N
+        counts = retained.astype(int).tolist()
+        rates = []
+        for idx in range(len(retained)):
+            if surv_denom.iloc[idx] > 0:
+                rates.append(round(float(retained.iloc[idx] / surv_denom.iloc[idx] * 100), 1))
+            else:
+                rates.append(0.0)
+
+        # 未定人数 (残存): 時間適格でない人数
+        # 1回目は未定なし、2回目以降: total_users - surv_denom_N
         pending = [0] * len(counts)
         if i >= 2:
-            prev_col = f"retained_{i - 1}"
-            denom_col = f"denom_{i}"
-            if prev_col in df.columns and denom_col in df.columns:
-                prev_retained = pd.to_numeric(df[prev_col], errors="coerce").fillna(0)
-                denom_vals = pd.to_numeric(df[denom_col], errors="coerce").fillna(0)
-                pending = (prev_retained - denom_vals).clip(lower=0).astype(int).tolist()
+            sd_col = f"surv_denom_{i}"
+            if sd_col in df.columns:
+                total_f = df["total_users"].astype(float)
+                sd_vals = pd.to_numeric(df[sd_col], errors="coerce").fillna(0)
+                pending = (total_f - sd_vals).clip(lower=0).astype(int).tolist()
 
         # マスク適用: コホート月ごとに判定
         if month_max_count:
@@ -109,18 +122,31 @@ def build_retention_rate_matrix(
         if col not in df.columns:
             break
         retained = pd.to_numeric(df[col], errors="coerce").fillna(0).values
-        rates = (retained / total * 100).round(1)
+
+        # 残存率の分母: 1回目=total_users, N≥2=surv_denom_N
+        if i == 1:
+            surv_denom = total.copy()
+        else:
+            sd_col = f"surv_denom_{i}"
+            if sd_col in df.columns:
+                surv_denom = pd.to_numeric(df[sd_col], errors="coerce").fillna(0).values
+            else:
+                surv_denom = total.copy()
+
+        rates = []
+        for idx in range(len(retained)):
+            if surv_denom[idx] > 0:
+                rates.append(round(retained[idx] / surv_denom[idx] * 100, 1))
+            else:
+                rates.append(0.0)
 
         # マスク適用
         if month_max_count:
-            rates_list = rates.tolist()
             for idx, cm in enumerate(df["cohort_month"]):
                 max_n = month_max_count.get(cm, MAX_RETENTION_MONTHS)
                 if i > max_n:
-                    rates_list[idx] = None
-            matrix[f"{i}回目"] = rates_list
-        else:
-            matrix[f"{i}回目"] = rates
+                    rates[idx] = None
+        matrix[f"{i}回目"] = rates
 
     matrix.index.name = "コホート月"
     return matrix
@@ -153,10 +179,14 @@ def build_continuation_rate_matrix(
     total = df["total_users"].astype(float).values
 
     for i in range(1, MAX_RETENTION_MONTHS + 1):
-        col = f"retained_{i}"
-        if col not in df.columns:
+        # 継続率の分子: 1回目=retained_1, N≥2=cont_num_N
+        if i == 1:
+            num_col = f"retained_{i}"
+        else:
+            num_col = f"cont_num_{i}" if f"cont_num_{i}" in df.columns else f"retained_{i}"
+        if num_col not in df.columns:
             break
-        retained = pd.to_numeric(df[col], errors="coerce").fillna(0).values
+        numerator = pd.to_numeric(df[num_col], errors="coerce").fillna(0).values
 
         # 継続率の分母を決定
         if i == 1:
@@ -166,15 +196,14 @@ def build_continuation_rate_matrix(
             if denom_col in df.columns:
                 denom = pd.to_numeric(df[denom_col], errors="coerce").fillna(0).values
             else:
-                # フォールバック: 前回の retained を使用
                 prev_col = f"retained_{i - 1}"
                 denom = pd.to_numeric(df[prev_col], errors="coerce").fillna(0).values if prev_col in df.columns else total.copy()
 
-        # 継続率: retained_i / denom * 100
+        # 継続率: cont_num_i / denom_i * 100
         rates = []
-        for idx in range(len(retained)):
+        for idx in range(len(numerator)):
             if denom[idx] > 0:
-                rates.append(round(retained[idx] / denom[idx] * 100, 1))
+                rates.append(round(numerator[idx] / denom[idx] * 100, 1))
             else:
                 rates.append(0.0)
 
@@ -184,9 +213,7 @@ def build_continuation_rate_matrix(
                 max_n = month_max_count.get(cm, MAX_RETENTION_MONTHS)
                 if i > max_n:
                     rates[idx] = None
-            matrix[f"{i}回目"] = rates
-        else:
-            matrix[f"{i}回目"] = rates
+        matrix[f"{i}回目"] = rates
 
     matrix.index.name = "コホート月"
     return matrix
@@ -345,19 +372,29 @@ def build_aggregate_table(
         retained = float(pd.to_numeric(row.get(ret_col, 0), errors="coerce") or 0)
         revenue = float(pd.to_numeric(row.get(rev_col, 0), errors="coerce") or 0)
 
-        # 継続率の分母: 1回目=total_users, N≥2=denom_N
+        # 残存率の分母: 1回目=total, N≥2=surv_denom_N
         if i == 1:
+            surv_denom = total
+        else:
+            sd_col = f"surv_denom_{i}"
+            surv_denom = float(pd.to_numeric(row.get(sd_col, 0), errors="coerce") or 0)
+            if surv_denom == 0:
+                surv_denom = total
+
+        # 継続率の分子/分母: 1回目=retained_1/total, N≥2=cont_num_N/denom_N
+        if i == 1:
+            cont_num = retained
             denom = total
         else:
+            cn_col = f"cont_num_{i}"
+            cont_num = float(pd.to_numeric(row.get(cn_col, 0), errors="coerce") or 0)
             denom_col = f"denom_{i}"
             denom = float(pd.to_numeric(row.get(denom_col, 0), errors="coerce") or 0)
             if denom == 0:
-                # フォールバック
-                prev_ret = float(pd.to_numeric(row.get(f"retained_{i-1}", 0), errors="coerce") or 0)
-                denom = prev_ret if prev_ret > 0 else total
+                denom = total
 
-        survival_rate = (retained / total * 100) if total > 0 else 0.0
-        continuation_rate = (retained / denom * 100) if denom > 0 else 0.0
+        survival_rate = (retained / surv_denom * 100) if surv_denom > 0 else 0.0
+        continuation_rate = (cont_num / denom * 100) if denom > 0 else 0.0
         avg_price = (revenue / retained) if retained > 0 else 0.0
         cumulative_revenue += revenue
         ltv = cumulative_revenue / total if total > 0 else 0.0
@@ -365,7 +402,7 @@ def build_aggregate_table(
         rows.append({
             "定期回数": f"{i}回目",
             "継続人数": int(retained),
-            "残存分母": int(total),
+            "残存分母": int(surv_denom),
             "継続分母": int(denom),
             "残存率(%)": round(survival_rate, 1),
             "継続率(%)": round(continuation_rate, 1),
@@ -417,35 +454,38 @@ def _build_aggregate_table_filtered(
         if retained == 0 and i > 1:
             break
 
-        # 継続率の分母: 1回目=eligible_total, N≥2=denom_N
+        # 残存率の分母: 1回目=eligible_total, N≥2=surv_denom_N
         if i == 1:
+            surv_denom = eligible_total
+        else:
+            sd_col = f"surv_denom_{i}"
+            if sd_col in eligible.columns:
+                surv_denom = float(pd.to_numeric(eligible[sd_col], errors="coerce").fillna(0).sum())
+            else:
+                surv_denom = eligible_total
+
+        # 継続率の分子/分母: 1回目=retained/eligible_total, N≥2=cont_num_N/denom_N
+        if i == 1:
+            cont_num = retained
             denom = eligible_total
         else:
+            cn_col = f"cont_num_{i}"
+            if cn_col in eligible.columns:
+                cont_num = float(pd.to_numeric(eligible[cn_col], errors="coerce").fillna(0).sum())
+            else:
+                cont_num = retained
             denom_col = f"denom_{i}"
             if denom_col in eligible.columns:
-                denom = float(
-                    pd.to_numeric(eligible[denom_col], errors="coerce").fillna(0).sum()
-                )
+                denom = float(pd.to_numeric(eligible[denom_col], errors="coerce").fillna(0).sum())
             else:
-                # フォールバック
-                prev_ret_col = f"retained_{i - 1}"
-                if prev_ret_col in eligible.columns:
-                    denom = float(
-                        pd.to_numeric(eligible[prev_ret_col], errors="coerce").fillna(0).sum()
-                    )
-                else:
-                    denom = eligible_total
+                denom = eligible_total
 
         revenue = 0.0
         if rev_col in eligible.columns:
             revenue = float(pd.to_numeric(eligible[rev_col], errors="coerce").fillna(0).sum())
 
-        # 残存率 = retained / eligible_total (同じ月集合の初回購入者ベース)
-        survival_rate = (retained / eligible_total * 100) if eligible_total > 0 else 0.0
-        # 継続率 = retained_i / denom_i
-        continuation_rate = (
-            (retained / denom * 100) if denom > 0 else 0.0
-        )
+        survival_rate = (retained / surv_denom * 100) if surv_denom > 0 else 0.0
+        continuation_rate = (cont_num / denom * 100) if denom > 0 else 0.0
         avg_price = (revenue / retained) if retained > 0 else 0.0
         cumulative_revenue += revenue
         ltv = cumulative_revenue / eligible_total if eligible_total > 0 else 0.0
@@ -453,7 +493,7 @@ def _build_aggregate_table_filtered(
         rows.append({
             "定期回数": f"{i}回目",
             "継続人数": int(retained),
-            "残存分母": int(eligible_total),
+            "残存分母": int(surv_denom),
             "継続分母": int(denom),
             "残存率(%)": round(survival_rate, 1),
             "継続率(%)": round(continuation_rate, 1),
@@ -549,30 +589,37 @@ def build_product_summary_table(
         if retained == 0 and i > 1:
             break
 
-        survival_rate = round(retained / eligible_total * 100, 1) if eligible_total > 0 else 0.0
-
-        # 継続率: 1回目=retained/eligible_total, N≥2=retained/denom_N
+        # 残存率: 1回目=retained/eligible_total, N≥2=retained/surv_denom_N
         if i == 1:
+            surv_denom = eligible_total
+        else:
+            sd_col = f"surv_denom_{i}"
+            if sd_col in eligible.columns:
+                surv_denom = float(pd.to_numeric(eligible[sd_col], errors="coerce").fillna(0).sum())
+            else:
+                surv_denom = eligible_total
+        survival_rate = round(retained / surv_denom * 100, 1) if surv_denom > 0 else 0.0
+
+        # 継続率: 1回目=retained/eligible_total, N≥2=cont_num_N/denom_N
+        if i == 1:
+            cont_num = retained
             denom = eligible_total
         else:
+            cn_col = f"cont_num_{i}"
+            if cn_col in eligible.columns:
+                cont_num = float(pd.to_numeric(eligible[cn_col], errors="coerce").fillna(0).sum())
+            else:
+                cont_num = retained
             denom_col = f"denom_{i}"
             if denom_col in eligible.columns:
-                denom = float(
-                    pd.to_numeric(eligible[denom_col], errors="coerce").fillna(0).sum()
-                )
+                denom = float(pd.to_numeric(eligible[denom_col], errors="coerce").fillna(0).sum())
             else:
-                prev_col = f"retained_{i - 1}"
-                if prev_col in eligible.columns:
-                    denom = float(
-                        pd.to_numeric(eligible[prev_col], errors="coerce").fillna(0).sum()
-                    )
-                else:
-                    denom = eligible_total
-        continuation_rate = round(retained / denom * 100, 1) if denom > 0 else 0.0
+                denom = eligible_total
+        continuation_rate = round(cont_num / denom * 100, 1) if denom > 0 else 0.0
 
         label = f"{i}回目"
-        continuation_row[label] = f"{continuation_rate}%\n({int(retained):,}/{int(denom):,})"
-        survival_row[label] = f"{survival_rate}%\n({int(retained):,}/{int(eligible_total):,})"
+        continuation_row[label] = f"{continuation_rate}%\n({int(cont_num):,}/{int(denom):,})"
+        survival_row[label] = f"{survival_rate}%\n({int(retained):,}/{int(surv_denom):,})"
         count_row[label] = f"{int(retained):,}件"
 
     if len(continuation_row) <= 1:
@@ -610,26 +657,37 @@ def build_dimension_summary_table(
         if retained == 0 and i > 1:
             break
 
-        survival_rate = round(retained / total_users * 100, 1) if total_users > 0 else 0.0
-
-        # 継続率: 1回目=retained/total_users, N≥2=retained/denom_N
+        # 残存率: 1回目=retained/total_users, N≥2=retained/surv_denom_N
         if i == 1:
+            surv_denom = total_users
+        else:
+            sd_col = f"surv_denom_{i}"
+            if sd_col in group.columns:
+                surv_denom = float(pd.to_numeric(group[sd_col], errors="coerce").fillna(0).sum())
+            else:
+                surv_denom = total_users
+        survival_rate = round(retained / surv_denom * 100, 1) if surv_denom > 0 else 0.0
+
+        # 継続率: 1回目=retained/total_users, N≥2=cont_num_N/denom_N
+        if i == 1:
+            cont_num = retained
             denom = total_users
         else:
+            cn_col = f"cont_num_{i}"
+            if cn_col in group.columns:
+                cont_num = float(pd.to_numeric(group[cn_col], errors="coerce").fillna(0).sum())
+            else:
+                cont_num = retained
             denom_col = f"denom_{i}"
             if denom_col in group.columns:
                 denom = float(pd.to_numeric(group[denom_col], errors="coerce").fillna(0).sum())
             else:
-                prev_col = f"retained_{i - 1}"
-                if prev_col in group.columns:
-                    denom = float(pd.to_numeric(group[prev_col], errors="coerce").fillna(0).sum())
-                else:
-                    denom = total_users
-        continuation_rate = round(retained / denom * 100, 1) if denom > 0 else 0.0
+                denom = total_users
+        continuation_rate = round(cont_num / denom * 100, 1) if denom > 0 else 0.0
 
         label = f"{i}回目"
-        continuation_row[label] = f"{continuation_rate}%\n({int(retained):,}/{int(denom):,})"
-        survival_row[label] = f"{survival_rate}%\n({int(retained):,}/{int(total_users):,})"
+        continuation_row[label] = f"{continuation_rate}%\n({int(cont_num):,}/{int(denom):,})"
+        survival_row[label] = f"{survival_rate}%\n({int(retained):,}/{int(surv_denom):,})"
         count_row[label] = f"{int(retained):,}件"
 
     return pd.DataFrame([continuation_row, survival_row, count_row])
@@ -893,10 +951,16 @@ def build_1year_ltv_table(
             avg_price = filtered_prices[i]
         elif not is_projected and max_actual_order == 0:
             # フィルタなし → 従来ロジック（raw agg_df）
-            ret_col = f"retained_{i}"
             rev_col = f"revenue_{i}"
-            actual_retained = float(pd.to_numeric(row.get(ret_col, 0), errors="coerce") or 0)
             actual_revenue = float(pd.to_numeric(row.get(rev_col, 0), errors="coerce") or 0)
+
+            # 継続率の分子: 1回目=retained_1, N≥2=cont_num_N
+            if i == 1:
+                cn_col = f"retained_{i}"
+            else:
+                cn_col = f"cont_num_{i}" if f"cont_num_{i}" in row.index else f"retained_{i}"
+            actual_cont_num = float(pd.to_numeric(row.get(cn_col, 0), errors="coerce") or 0)
+            actual_retained = float(pd.to_numeric(row.get(f"retained_{i}", 0), errors="coerce") or 0)
 
             if actual_retained > 0 or i == 1:
                 if i == 1:
@@ -905,8 +969,8 @@ def build_1year_ltv_table(
                     denom_col = f"denom_{i}"
                     denom_val = float(pd.to_numeric(row.get(denom_col, 0), errors="coerce") or 0)
                     if denom_val == 0:
-                        denom_val = float(pd.to_numeric(row.get(f"retained_{i-1}", 0), errors="coerce") or total)
-                continuation_rate = (actual_retained / denom_val * 100)
+                        denom_val = total
+                continuation_rate = (actual_cont_num / denom_val * 100)
                 avg_price = actual_revenue / actual_retained if actual_retained > 0 else 0
                 if continuation_rate > 0:
                     last_actual_rate = continuation_rate
