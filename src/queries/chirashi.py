@@ -119,7 +119,7 @@ switched AS (
     ON cr.customer_id = a.`{Col.CUSTOMER_ID}`
   WHERE EXISTS (
     SELECT 1 FROM UNNEST(SPLIT(cr.target_product, ',')) AS tp
-    WHERE STRPOS(a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`, TRIM(tp)) > 0
+    WHERE STRPOS(a.`{Col.PRODUCT_NAME}`, TRIM(tp)) > 0
   )
   AND SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) > cr.chirashi_order_count
   AND a.`{Col.ORDER_STATUS}` = 'shipped'
@@ -203,7 +203,8 @@ customer_orders AS (
     cr.chirashi_order_count,
     cr.target_product,
     SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) AS order_count,
-    a.`{Col.SUBSCRIPTION_PRODUCT_NAME}` AS sub_product_name
+    a.`{Col.SUBSCRIPTION_PRODUCT_NAME}` AS sub_product_name,
+    a.`{Col.PRODUCT_NAME}` AS order_product_name
   FROM chirashi_recipients cr
   JOIN {integrated} a
     ON cr.customer_id = a.`{Col.CUSTOMER_ID}`
@@ -220,7 +221,7 @@ first_switch AS (
   WHERE order_count > chirashi_order_count
     AND EXISTS (
       SELECT 1 FROM UNNEST(SPLIT(target_product, ',')) AS tp
-      WHERE STRPOS(sub_product_name, TRIM(tp)) > 0
+      WHERE STRPOS(order_product_name, TRIM(tp)) > 0
     )
   GROUP BY 1, 2
 ),
@@ -344,14 +345,14 @@ WITH {pc_prefix}chirashi_recipients AS (
 ),
 switched_products AS (
   SELECT DISTINCT
-    a.`{Col.SUBSCRIPTION_PRODUCT_NAME}` AS switched_product_name,
+    a.`{Col.PRODUCT_NAME}` AS switched_product_name,
     cr.customer_id
   FROM chirashi_recipients cr
   JOIN {integrated} a
     ON cr.customer_id = a.`{Col.CUSTOMER_ID}`
   WHERE EXISTS (
     SELECT 1 FROM UNNEST(SPLIT(cr.target_product, ',')) AS tp
-    WHERE STRPOS(a.`{Col.SUBSCRIPTION_PRODUCT_NAME}`, TRIM(tp)) > 0
+    WHERE STRPOS(a.`{Col.PRODUCT_NAME}`, TRIM(tp)) > 0
   )
   AND SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) > cr.chirashi_order_count
   AND a.`{Col.ORDER_STATUS}` = 'shipped'
@@ -494,7 +495,7 @@ switched_with_timing AS (
   WHERE order_count > chirashi_order_count
     AND EXISTS (
       SELECT 1 FROM UNNEST(SPLIT(target_product, ',')) AS tp
-      WHERE STRPOS(sub_product_name, TRIM(tp)) > 0
+      WHERE STRPOS(order_product_name, TRIM(tp)) > 0
     )
   GROUP BY 1, 2
 ),
@@ -507,7 +508,7 @@ switched_max AS (
     MAX(co.order_count) AS max_shipped,
     MIN(CASE WHEN co.order_count = s.switch_order_count THEN co.sales_date END) AS switch_date,
     MIN(co.sales_date) AS first_order_date,
-    ANY_VALUE(CASE WHEN co.order_count = s.switch_order_count THEN co.sub_product_name END) AS switched_product_name,
+    ANY_VALUE(CASE WHEN co.order_count = s.switch_order_count THEN co.order_product_name END) AS switched_product_name,
     ANY_VALUE(CASE WHEN co.order_count = s.switch_order_count - 1 THEN co.order_product_name END) AS original_product_name
   FROM switched_with_timing s
   JOIN customer_orders co
