@@ -23,8 +23,14 @@ def build_filter_clause(
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
     ad_url_params: list[str] | None = None,
+    eligible_before: str | None = None,
 ) -> str:
     """共通のWHERE句フィルタを構築.
+
+    Args:
+        eligible_before: データ完全性フィルタ用の上限日 (YYYY-MM-DD).
+            定期受注_作成日時がこの日以前の顧客のみを対象にする。
+            cutoff_date - PROCESSING_BUFFER_DAYS で算出される。
 
     Returns:
         "AND ..." 形式のフィルタ文字列。呼び出し側でWHEREの後に結合する。
@@ -38,6 +44,10 @@ def build_filter_clause(
     if date_to:
         clauses.append(
             f"AND SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP) <= '{date_to}'"
+        )
+    if eligible_before:
+        clauses.append(
+            f"AND SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP) <= '{eligible_before} 23:59:59'"
         )
 
     if product_categories:

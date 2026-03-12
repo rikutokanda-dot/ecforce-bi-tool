@@ -87,6 +87,7 @@ def build_cohort_sql(
     cycle1: int = 30,
     cycle2: int = 30,
     cutoff_date: str | None = None,
+    eligible_before: str | None = None,
 ) -> str:
     """通常コホート分析SQL (月別)."""
     table = get_table_ref(company_key)
@@ -96,6 +97,7 @@ def build_cohort_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
+        eligible_before=eligible_before,
     )
 
     retained_columns = _build_select_columns(cycle1, cycle2, cutoff_date)
@@ -145,6 +147,7 @@ def build_drilldown_sql(
     cycle1: int = 30,
     cycle2: int = 30,
     cutoff_date: str | None = None,
+    eligible_before: str | None = None,
 ) -> str:
     """ドリルダウン分析SQL (商品名別、広告グループ別、商品カテゴリ別).
 
@@ -157,6 +160,7 @@ def build_drilldown_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
+        eligible_before=eligible_before,
     )
 
     # 定期商品名の場合 revenue も取得
@@ -203,6 +207,86 @@ def build_drilldown_sql(
     """
 
 
+def build_drilldown_order_detail_sql(
+    company_key: str,
+    product_name: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    product_categories: list[str] | None = None,
+    ad_groups: list[str] | None = None,
+    product_names: list[str] | None = None,
+    eligible_before: str | None = None,
+) -> str:
+    """商品名ドリルダウンの受注番号詳細SQL.
+
+    指定した商品名のコホートベース顧客について、
+    - base: 1回目の受注（コホートベース全員、ステータス問わず）
+    - retained: shipped+completed の受注（各定期回数）
+    を返す。UI側でeligible月フィルタを適用して分母分子を抽出する。
+    """
+    table = get_table_ref(company_key)
+    filters = build_filter_clause(
+        date_from=date_from,
+        date_to=date_to,
+        product_categories=product_categories,
+        ad_groups=ad_groups,
+        product_names=product_names,
+        eligible_before=eligible_before,
+    )
+
+    escaped_product = product_name.replace("'", "\\'")
+
+    return f"""
+    WITH
+    cohort_base AS (
+      SELECT
+        `{Col.CUSTOMER_ID}` AS customer_id,
+        `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
+        FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
+        MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
+      FROM {table}
+      WHERE SAFE_CAST(`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+      AND `{Col.SUBSCRIPTION_PRODUCT_NAME}` = '{escaped_product}'
+      {filters}
+      GROUP BY customer_id, first_product_name, cohort_month
+      HAVING has_entry_data = 1 AND has_logic_2 = 0
+    ),
+    base_orders AS (
+      SELECT DISTINCT
+        'base' AS record_type,
+        t1.customer_id,
+        t2.`{Col.ORDER_ID}` AS order_id,
+        1 AS subscription_count,
+        t1.cohort_month
+      FROM cohort_base t1
+      INNER JOIN {table} t2
+        ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
+        AND SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1
+        AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
+    ),
+    retained_orders AS (
+      SELECT DISTINCT
+        'retained' AS record_type,
+        t1.customer_id,
+        t2.`{Col.ORDER_ID}` AS order_id,
+        SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) AS subscription_count,
+        t1.cohort_month
+      FROM cohort_base t1
+      INNER JOIN {table} t2
+        ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
+        AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
+        AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+      WHERE SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) IS NOT NULL
+    )
+    SELECT * FROM base_orders
+    UNION ALL
+    SELECT * FROM retained_orders
+    ORDER BY customer_id, subscription_count
+    """
+
+
 def build_aggregate_cohort_sql(
     company_key: str,
     date_from: str | None = None,
@@ -213,6 +297,7 @@ def build_aggregate_cohort_sql(
     cycle1: int = 30,
     cycle2: int = 30,
     cutoff_date: str | None = None,
+    eligible_before: str | None = None,
 ) -> str:
     """通算コホート分析SQL.
 
@@ -226,6 +311,7 @@ def build_aggregate_cohort_sql(
         product_categories=product_categories,
         ad_groups=ad_groups,
         product_names=product_names,
+        eligible_before=eligible_before,
     )
 
     retained_cols = _build_select_columns(
@@ -265,13 +351,13 @@ def build_aggregate_cohort_sql(
 def build_max_date_sql(company_key: str) -> str:
     """出荷済み受注データの最終日を取得するSQL.
 
-    定期受注_作成日時のMAXだと未出荷の定期受注も含むため
-    実際のデータカットオフ日にならない。
-    shipped & completed の受注の最新日をカットオフとして使用する。
+    受注_売上日時のMAXを使用。定期受注_作成日時だと定期開始日であり、
+    実際の出荷日（＝データカットオフ日）とずれるため。
+    shipped & completed の受注の最新売上日をカットオフとして使用する。
     """
     table = get_table_ref(company_key)
     return f"""
-    SELECT MAX(`{Col.SUBSCRIPTION_CREATED_AT}`) AS max_date
+    SELECT MAX(SAFE_CAST(`{Col.SALES_DATE}` AS TIMESTAMP)) AS max_date
     FROM {table}
     WHERE `{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
       AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'

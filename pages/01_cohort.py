@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -11,20 +11,20 @@ import streamlit as st
 
 from src.bigquery_client import execute_query, fetch_filtered_options, get_bigquery_client
 from src.components.cohort_heatmap import render_cohort_heatmap, render_retention_line_chart
-from src.components.download_button import render_download_buttons
+from src.components.download_button import df_to_csv_bytes, render_download_buttons
 from src.components.filters import render_cohort_filters
 from src.components.metrics_row import render_metrics
-from src.config_loader import get_product_cycle, get_upsell_target, get_upsell_targets, load_upsell_mappings
-from src.constants import Col
+from src.config_loader import get_product_cycle, load_upsell_mappings
+from src.constants import Col, MAX_RETENTION_MONTHS, PROCESSING_BUFFER_DAYS
 from src.queries.common import get_table_ref
 from src.queries.cohort import (
     build_aggregate_cohort_sql,
     build_cohort_sql,
+    build_drilldown_order_detail_sql,
     build_drilldown_sql,
     build_max_date_sql,
     build_upsell_rate_monthly_sql,
     build_upsell_rate_sql,
-    build_upsell_sql,
 )
 from src.session import SessionKey, get_selected_company_key
 from src.transforms.cohort_transform import (
@@ -39,8 +39,8 @@ from src.transforms.cohort_transform import (
     build_shipping_schedule,
     compute_aggregate_metrics,
     compute_max_orders_in_period,
+    compute_month_end_mask,
     compute_summary_metrics,
-    compute_upsell_rate,
 )
 
 
@@ -106,34 +106,18 @@ def _upsell_label_html(title: str, before_name: str, after_name: str) -> str:
 def _render_upsell_pair(
     client,
     company_key: str,
-    normal_names: str | list[str],
-    upsell_name: str,
+    numerator_names: list[str],
+    denominator_names: list[str],
+    period_ref_names: list[str],
     label_title: str,
     date_from_str: str | None,
     date_to_str: str | None,
     *,
-    skip_if_no_normal: bool = False,
     pair_key: str = "",
 ):
-    """1組のアップセル率を表示（初回判定のみ）。skip時はUI自体を出さない。"""
-    # skip_if_no_normal の場合、まずデータ有無を確認してからフラグメント描画
-    if skip_if_no_normal:
-        sql_check = build_upsell_rate_sql(
-            company_key, normal_names, upsell_name,
-            date_from_str, date_to_str,
-        )
-        try:
-            df_check = execute_query(client, sql_check)
-            if df_check.empty or df_check["upsell_rate"].iloc[0] is None:
-                return
-            if int(df_check.iloc[0]["normal_count"]) == 0:
-                return
-        except Exception:
-            return
-
-    # フラグメントとして描画（日付変更時にここだけ再実行）
+    """1組のアップセル率を表示."""
     _upsell_pair_fragment(
-        client, company_key, normal_names, upsell_name,
+        client, company_key, numerator_names, denominator_names, period_ref_names,
         label_title, date_from_str, date_to_str,
         pair_key=pair_key,
     )
@@ -143,8 +127,9 @@ def _render_upsell_pair(
 def _upsell_pair_fragment(
     client,
     company_key: str,
-    normal_names: str | list[str],
-    upsell_name: str,
+    numerator_names: list[str],
+    denominator_names: list[str],
+    period_ref_names: list[str],
     label_title: str,
     date_from_str: str | None,
     date_to_str: str | None,
@@ -152,37 +137,30 @@ def _upsell_pair_fragment(
     pair_key: str = "",
 ):
     """フラグメント化されたアップセル率表示。日付変更時にこの部分だけ再実行。"""
-    # normal_names をリスト化して表示用文字列を作る
-    if isinstance(normal_names, str):
-        _normal_list = [normal_names]
-    else:
-        _normal_list = list(normal_names)
-    _normal_display = ", ".join(_normal_list)
+    _num_display = ", ".join(numerator_names)
+    _denom_display = ", ".join(denominator_names)
 
-    _key_base = pair_key or f"{'_'.join(_normal_list)}_{upsell_name}"
+    _key_base = pair_key or f"{'_'.join(numerator_names)}_{'_'.join(denominator_names)}"
     _k_from = f"us_period_from_{_key_base}"
     _k_to = f"us_period_to_{_key_base}"
 
-    # session_state にユーザー指定日付があればそれを使う、なければ自動検出
     has_override = _k_from in st.session_state
     if has_override:
-        override_from = st.session_state[_k_from].strftime("%Y-%m-%d")
-        override_to = st.session_state[_k_to].strftime("%Y-%m-%d")
-        query_from = override_from
-        query_to = override_to
+        query_from = st.session_state[_k_from].strftime("%Y-%m-%d")
+        query_to = st.session_state[_k_to].strftime("%Y-%m-%d")
     else:
         query_from = date_from_str
         query_to = date_to_str
 
     sql = build_upsell_rate_sql(
-        company_key, _normal_list, upsell_name,
+        company_key, numerator_names, denominator_names, period_ref_names,
         query_from, query_to,
     )
     try:
         df = execute_query(client, sql)
         if df.empty or df["upsell_rate"].iloc[0] is None:
             st.markdown(f"**{label_title}**　データなし")
-            st.markdown(f"<small>US前：{_normal_display}<br>US後：{upsell_name}</small>",
+            st.markdown(f"<small>分母：{_denom_display}<br>分子：{_num_display}</small>",
                         unsafe_allow_html=True)
             st.divider()
             return
@@ -193,17 +171,14 @@ def _upsell_pair_fragment(
         period_start = str(row["period_start"])[:10]
         period_end = str(row["period_end"])[:10]
 
-        # 1行目: アップセル率 ~~%　通常:-人/アップセル:-人
         st.markdown(
-            f"**{label_title}　{rate}%**　　通常: {normal_count:,}人 / アップセル: {upsell_count:,}人"
+            f"**{label_title}　{rate}%**　　分母: {normal_count:,}人 / 分子: {upsell_count:,}人"
         )
-        # 2行目: US前/US後
         st.markdown(
-            f"<small>US前：{_normal_display}<br>US後：{upsell_name}</small>",
+            f"<small>分母：{_denom_display}<br>分子：{_num_display}</small>",
             unsafe_allow_html=True,
         )
 
-        # 対象期間を date_input で表示（初回は自動検出値をデフォルトに）
         if not has_override:
             st.session_state[_k_from] = date.fromisoformat(period_start)
             st.session_state[_k_to] = date.fromisoformat(period_end)
@@ -214,12 +189,11 @@ def _upsell_pair_fragment(
         with dcols[1]:
             st.date_input("対象終了日", key=_k_to)
 
-        # 仕切り線
         st.divider()
     except Exception as e:
         st.markdown(f"**{label_title}**　エラー")
         st.markdown(
-            f"<small>US前：{_normal_display}<br>US後：{upsell_name}</small>",
+            f"<small>分母：{_denom_display}<br>分子：{_num_display}</small>",
             unsafe_allow_html=True,
         )
         st.caption(f"({e})")
@@ -229,46 +203,36 @@ def _upsell_pair_fragment(
 def _render_upsell_monthly(
     client,
     company_key: str,
-    normal_names: str | list[str],
-    upsell_name: str,
+    numerator_names: list[str],
+    denominator_names: list[str],
+    period_ref_names: list[str],
     label_title: str,
     date_from_str: str | None,
     date_to_str: str | None,
-    *,
-    skip_if_no_normal: bool = False,
 ):
     """月別アップセル率テーブル+グラフを表示."""
-    if isinstance(normal_names, str):
-        _normal_list = [normal_names]
-    else:
-        _normal_list = list(normal_names)
-    _normal_display = ", ".join(_normal_list)
+    _num_display = ", ".join(numerator_names)
+    _denom_display = ", ".join(denominator_names)
 
     sql = build_upsell_rate_monthly_sql(
-        company_key, _normal_list, upsell_name,
+        company_key, numerator_names, denominator_names, period_ref_names,
         date_from_str, date_to_str,
     )
-    label_md = _upsell_label_html(label_title, _normal_display, upsell_name)
+    label_md = _upsell_label_html(label_title, _denom_display, _num_display)
     try:
         df = execute_query(client, sql)
         if df.empty:
-            if not skip_if_no_normal:
-                st.markdown(label_md)
-                st.info("データなし")
-            return
-
-        # 通常商品が全月で0人ならスキップ
-        if skip_if_no_normal and df["normal_count"].sum() == 0:
+            st.markdown(label_md)
+            st.info("データなし")
             return
 
         display_df = df[["cohort_month", "normal_count", "upsell_count", "upsell_rate"]].copy()
-        display_df.columns = ["月", "通常商品(人)", "アップセル商品(人)", "アップセル率(%)"]
+        display_df.columns = ["月", "分母(人)", "分子(人)", "アップセル率(%)"]
         display_df["アップセル率(%)"] = display_df["アップセル率(%)"].round(1)
 
         st.markdown(label_md)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-        # 折れ線グラフ
         if len(display_df) > 1:
             fig = go.Figure()
             fig.add_trace(go.Scatter(
@@ -315,15 +279,6 @@ client = get_bigquery_client()
 date_from_str = date_from.strftime("%Y-%m-%d") if date_from else None
 date_to_str = date_to.strftime("%Y-%m-%d") if date_to else None
 
-filter_params = dict(
-    company_key=company_key,
-    date_from=date_from_str,
-    date_to=date_to_str,
-    product_categories=filters["product_categories"],
-    ad_groups=filters["ad_groups"],
-    product_names=filters["product_names"],
-)
-
 # 選択商品のサイクル値を取得
 _selected_pnames = filters.get("product_names")
 if _selected_pnames and len(_selected_pnames) == 1:
@@ -347,6 +302,21 @@ try:
 except Exception as e:
     st.warning(f"データカットオフ日取得エラー: {e}")
     data_cutoff_date = date.today()
+
+# eligible_before: 定期受注作成日がこの日以前の顧客のみ対象
+# cutoff - 10日 = 1回目の出荷・解決が完了している作成日の上限
+eligible_before_date = data_cutoff_date - timedelta(days=PROCESSING_BUFFER_DAYS)
+eligible_before_str = eligible_before_date.strftime("%Y-%m-%d")
+
+filter_params = dict(
+    company_key=company_key,
+    date_from=date_from_str,
+    date_to=date_to_str,
+    product_categories=filters["product_categories"],
+    ad_groups=filters["ad_groups"],
+    product_names=filters["product_names"],
+    eligible_before=eligible_before_str,
+)
 
 # コホートSQL用の追加パラメータ (継続率の時間適格チェック)
 _cutoff_str = data_cutoff_date.strftime("%Y-%m-%d")
@@ -409,7 +379,7 @@ with main_tab_drilldown:
                     dimension_values = dim_sorted
 
                 st.info(f"**定期商品名別**: {len(dimension_values)} 件")
-                st.caption(f"データカットオフ日: {data_cutoff_date}")
+                st.caption(f"データカットオフ日: {data_cutoff_date}　/　eligible上限: {eligible_before_str}")
 
                 # 並び替えUI
                 sort_opt = st.radio(
@@ -437,6 +407,139 @@ with main_tab_drilldown:
                             st.info("データがありません。")
                             continue
                         st.dataframe(summary, use_container_width=True, hide_index=True)
+
+                        # --- 受注番号ダウンロード ---
+                        _dl_key = f"dd_order_detail_{pname}"
+                        if st.button(
+                            "📥 受注番号ダウンロード",
+                            key=f"btn_order_dl_{pname}",
+                        ):
+                            try:
+                                _detail_sql = build_drilldown_order_detail_sql(
+                                    product_name=pname, **filter_params
+                                )
+                                st.session_state[_dl_key] = execute_query(
+                                    client, _detail_sql
+                                )
+                            except Exception as _e:
+                                st.error(f"受注番号クエリ実行エラー: {_e}")
+
+                        if _dl_key in st.session_state:
+                            _detail_df = st.session_state[_dl_key]
+                            if _detail_df.empty:
+                                st.info("受注番号データがありません。")
+                            else:
+                                # eligible月を計算
+                                _group = dd_df[dd_df["dimension_col"] == pname]
+                                _month_max: dict[str, int] = {}
+                                if data_cutoff_date is not None:
+                                    for _, _r in _group.iterrows():
+                                        _cm = _r["cohort_month"]
+                                        _month_max[_cm] = compute_month_end_mask(
+                                            _cm, pname, data_cutoff_date
+                                        )
+                                else:
+                                    for _, _r in _group.iterrows():
+                                        _month_max[_r["cohort_month"]] = MAX_RETENTION_MONTHS
+
+                                # 表示可能な回数を取得
+                                _avail_counts = sorted(
+                                    {
+                                        int(c.replace("回目", ""))
+                                        for c in summary.columns
+                                        if c.endswith("回目")
+                                    }
+                                )
+                                if _avail_counts:
+                                    _sel_n = st.selectbox(
+                                        "定期回数を選択",
+                                        _avail_counts,
+                                        format_func=lambda x: f"{x}回目",
+                                        key=f"sel_dl_n_{pname}",
+                                    )
+
+                                    # eligible月 (count _sel_n のデータが揃っている月)
+                                    _eligible = [
+                                        cm
+                                        for cm, mx in _month_max.items()
+                                        if mx >= _sel_n
+                                    ]
+
+                                    # 残存率分母: base (1回目の全受注) × eligible月
+                                    _surv_denom = _detail_df[
+                                        (_detail_df["record_type"] == "base")
+                                        & (_detail_df["cohort_month"].isin(_eligible))
+                                    ][["customer_id", "order_id"]].drop_duplicates()
+
+                                    # 残存率分子 = 継続率分子: retained × count=_sel_n × eligible月
+                                    _surv_numer = _detail_df[
+                                        (_detail_df["record_type"] == "retained")
+                                        & (_detail_df["subscription_count"] == _sel_n)
+                                        & (_detail_df["cohort_month"].isin(_eligible))
+                                    ][["customer_id", "order_id"]].drop_duplicates()
+
+                                    # 継続率分母: i=1→base, i>1→retained at count _sel_n-1 (同eligible月)
+                                    if _sel_n == 1:
+                                        _cont_denom = _surv_denom
+                                    else:
+                                        _cont_denom = _detail_df[
+                                            (_detail_df["record_type"] == "retained")
+                                            & (
+                                                _detail_df["subscription_count"]
+                                                == _sel_n - 1
+                                            )
+                                            & (
+                                                _detail_df["cohort_month"].isin(
+                                                    _eligible
+                                                )
+                                            )
+                                        ][["customer_id", "order_id"]].drop_duplicates()
+
+                                    st.caption(f"**{_sel_n}回目の受注番号CSV**")
+
+                                    # ファイル名のWindows禁止文字を除去
+                                    _safe_name = (
+                                        pname.replace("/", "_")
+                                        .replace("\\", "_")
+                                        .replace(":", "_")
+                                        .replace("*", "_")
+                                        .replace("?", "_")
+                                        .replace('"', "_")
+                                        .replace("<", "_")
+                                        .replace(">", "_")
+                                        .replace("|", "_")
+                                    )
+
+                                    _hdr = {"header": ["顧客ID", "受注番号"]}
+                                    _c1, _c2 = st.columns(2)
+                                    with _c1:
+                                        st.markdown("**残存率**")
+                                        st.download_button(
+                                            f"分母 ({len(_surv_denom)}件)",
+                                            df_to_csv_bytes(_surv_denom, **_hdr),
+                                            f"{_safe_name}_{_sel_n}回目_残存率_分母.csv",
+                                            key=f"dl_surv_d_{pname}_{_sel_n}",
+                                        )
+                                        st.download_button(
+                                            f"分子 ({len(_surv_numer)}件)",
+                                            df_to_csv_bytes(_surv_numer, **_hdr),
+                                            f"{_safe_name}_{_sel_n}回目_残存率_分子.csv",
+                                            key=f"dl_surv_n_{pname}_{_sel_n}",
+                                        )
+                                    with _c2:
+                                        st.markdown("**継続率**")
+                                        st.download_button(
+                                            f"分母 ({len(_cont_denom)}件)",
+                                            df_to_csv_bytes(_cont_denom, **_hdr),
+                                            f"{_safe_name}_{_sel_n}回目_継続率_分母.csv",
+                                            key=f"dl_cont_d_{pname}_{_sel_n}",
+                                        )
+                                        st.download_button(
+                                            f"分子 ({len(_surv_numer)}件)",
+                                            df_to_csv_bytes(_surv_numer, **_hdr),
+                                            f"{_safe_name}_{_sel_n}回目_継続率_分子.csv",
+                                            key=f"dl_cont_n_{pname}_{_sel_n}",
+                                        )
 
     # ========== 広告グループ ==========
     with dd_tab_adgroup:
@@ -797,14 +900,12 @@ with main_tab_upsell:
     _upsell_filter_pnames = filters.get("product_names")
     _upsell_filter_cats = filters.get("product_categories")
     if _upsell_filter_pnames:
-        # 商品名が選択されていれば from_names に含まれるか
         _pname_set = set(_upsell_filter_pnames)
         all_mappings = [
             m for m in _all_mappings_raw
-            if _pname_set & set(m.get("from_names", []))
+            if _pname_set & set(m.get("denominator_names", []))
         ]
     elif _upsell_filter_cats:
-        # 商品カテゴリが選択されていれば、そのカテゴリに属する商品名を取得してフィルタ
         _table_ref = get_table_ref(company_key)
         _cat_product_names = fetch_filtered_options(
             client, _table_ref, Col.SUBSCRIPTION_PRODUCT_NAME,
@@ -813,7 +914,7 @@ with main_tab_upsell:
         _cat_pname_set = set(_cat_product_names)
         all_mappings = [
             m for m in _all_mappings_raw
-            if _cat_pname_set & set(m.get("from_names", []))
+            if _cat_pname_set & set(m.get("denominator_names", []))
         ]
     else:
         all_mappings = list(_all_mappings_raw)
@@ -828,76 +929,37 @@ with main_tab_upsell:
         if not st.session_state.get("upsell_tab_shown"):
             st.info("「表示する」を押すとアップセル率を計算します。")
         else:
-            # upsell_name 単位でグループ化（1アコーディオン = 1 US後商品）
-            _upsell_items: list[dict] = []
-            _seen_upsell: dict[str, int] = {}
-            for m in all_mappings:
-                fns = m.get("from_names", [])
-                un = m.get("upsell_name", "")
-                uun = m.get("upsell_upsell_name")
-                if not fns or not un:
-                    continue
-                if un not in _seen_upsell:
-                    _seen_upsell[un] = len(_upsell_items)
-                    _upsell_items.append({
-                        "from_names": list(fns),
-                        "upsell_name": un,
-                        "upsell_upsell_names": [uun] if uun else [],
-                    })
-                else:
-                    item = _upsell_items[_seen_upsell[un]]
-                    for fn in fns:
-                        if fn not in item["from_names"]:
-                            item["from_names"].append(fn)
-                    if uun and uun not in item["upsell_upsell_names"]:
-                        item["upsell_upsell_names"].append(uun)
-
             upsell_sub_agg, upsell_sub_monthly = st.tabs(["通算", "月別"])
 
-            # ---------- 通算アップセル率 ----------
             with upsell_sub_agg:
-                for _gi, item in enumerate(_upsell_items):
-                    un = item["upsell_name"]
-                    with st.expander(f"📦 {un}", expanded=True):
-                        # アップセル率: 各 from_names → upsell_name
+                for _gi, m in enumerate(all_mappings):
+                    label = m.get("label", f"マッピング{_gi+1}")
+                    num = m.get("numerator_names", [])
+                    denom = m.get("denominator_names", [])
+                    pref = m.get("period_ref_names", num)
+                    if not num or not denom:
+                        continue
+                    with st.expander(f"📦 {label}", expanded=True):
                         _render_upsell_pair(
                             client, company_key,
-                            item["from_names"], un,
-                            "アップセル率",
+                            num, denom, pref,
+                            label,
                             date_from_str, date_to_str,
                             pair_key=f"agg_{_gi}",
                         )
-                        # アップアップセル率: upsell_name → 各 upsell_upsell_name
-                        if item["upsell_upsell_names"]:
-                            st.divider()
-                            for _uui, uun in enumerate(item["upsell_upsell_names"]):
-                                _render_upsell_pair(
-                                    client, company_key,
-                                    un, uun,
-                                    "ｱｯﾌﾟｱｯﾌﾟｾﾙ率",
-                                    date_from_str, date_to_str,
-                                    skip_if_no_normal=True,
-                                    pair_key=f"agg_uu_{_gi}_{_uui}",
-                                )
 
-            # ---------- 月別アップセル率 ----------
             with upsell_sub_monthly:
-                for _gi, item in enumerate(_upsell_items):
-                    un = item["upsell_name"]
-                    with st.expander(f"📦 {un}", expanded=True):
+                for _gi, m in enumerate(all_mappings):
+                    label = m.get("label", f"マッピング{_gi+1}")
+                    num = m.get("numerator_names", [])
+                    denom = m.get("denominator_names", [])
+                    pref = m.get("period_ref_names", num)
+                    if not num or not denom:
+                        continue
+                    with st.expander(f"📦 {label}", expanded=True):
                         _render_upsell_monthly(
                             client, company_key,
-                            item["from_names"], un,
-                            "アップセル率",
+                            num, denom, pref,
+                            label,
                             date_from_str, date_to_str,
                         )
-                        if item["upsell_upsell_names"]:
-                            st.divider()
-                            for uun in item["upsell_upsell_names"]:
-                                _render_upsell_monthly(
-                                    client, company_key,
-                                    un, uun,
-                                    "ｱｯﾌﾟｱｯﾌﾟｾﾙ率",
-                                    date_from_str, date_to_str,
-                                    skip_if_no_normal=True,
-                                )

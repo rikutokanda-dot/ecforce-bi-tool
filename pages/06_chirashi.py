@@ -11,11 +11,13 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from src.bigquery_client import execute_query, get_bigquery_client
+from src.bigquery_client import execute_query, execute_query_no_cache, get_bigquery_client
+from src.components.download_button import df_to_csv_bytes
 from src.components.retention_table import build_grouped_retention_html
 from src.config_loader import load_product_cycles, save_product_cycles
 from src.queries.chirashi import (
     build_chirashi_config_sql,
+    build_chirashi_frequency_customers_sql,
     build_chirashi_frequency_rate_sql,
     build_chirashi_list_sql,
     build_chirashi_retention_sql,
@@ -39,8 +41,13 @@ client = get_bigquery_client()
 
 # キャッシュクリア（スプシ更新後に押す）
 if st.button("🔄 スプシ再取得（キャッシュクリア）", key="chirashi_cache_clear"):
+    st.session_state["chirashi_force_refresh"] = True
     st.cache_data.clear()
     st.rerun()
+
+# force_refreshフラグがあればBQキャッシュもバイパス（外部テーブル用）
+_force_refresh = st.session_state.pop("chirashi_force_refresh", False)
+_run_query = execute_query_no_cache if _force_refresh else execute_query
 
 # サイドバーの受注日フィルタを取得
 order_date_from = st.session_state.get(SessionKey.ORDER_DATE_FROM)
@@ -55,7 +62,7 @@ if not order_date_from and not order_date_to:
 # ---------------------------------------------------------------------------
 try:
     config_sql = build_chirashi_config_sql(company_key)
-    config_df = execute_query(client, config_sql)
+    config_df = _run_query(client, config_sql)
 except Exception:
     config_df = pd.DataFrame()
 
@@ -81,7 +88,7 @@ with tab_upsell:
 
     try:
         sql = build_chirashi_upsell_rate_sql(company_key, order_date_from, order_date_to)
-        df = execute_query(client, sql)
+        df = _run_query(client, sql)
     except Exception as e:
         st.error(f"クエリ実行エラー: {e}")
         df = pd.DataFrame()
@@ -140,10 +147,21 @@ with tab_upsell:
             freq_sql = build_chirashi_frequency_rate_sql(
                 company_key, order_date_from, order_date_to
             )
-            freq_df = execute_query(client, freq_sql)
+            freq_df = _run_query(client, freq_sql)
         except Exception as e:
             st.error(f"F転換率クエリ実行エラー: {e}")
             freq_df = pd.DataFrame()
+
+        # 顧客ID一覧を取得（CSV出力用）
+        cust_df = pd.DataFrame()
+        if not freq_df.empty:
+            try:
+                cust_sql = build_chirashi_frequency_customers_sql(
+                    company_key, order_date_from, order_date_to
+                )
+                cust_df = _run_query(client, cust_sql)
+            except Exception:
+                cust_df = pd.DataFrame()
 
         if not freq_df.empty:
             for cname in freq_df["chirashi_name"].unique():
@@ -156,6 +174,41 @@ with tab_upsell:
                     disp["切替数"] = disp["切替数"].apply(lambda x: f"{int(x):,}")
                     disp["転換率(%)"] = disp["転換率(%)"].apply(lambda x: f"{x:.1f}%")
                     st.dataframe(disp, use_container_width=True, hide_index=True)
+
+                    # 顧客IDダウンロードボタン
+                    if not cust_df.empty:
+                        st.caption("📥 顧客IDダウンロード")
+                        for _, row in cdf.iterrows():
+                            oc = int(row["order_count"])
+                            display_f = f"{oc + 1}回目"
+                            cols = st.columns([1, 1.5, 1.5])
+                            cols[0].write(display_f)
+
+                            # 投函顧客
+                            d_ids = cust_df[
+                                (cust_df["type"] == "delivery")
+                                & (cust_df["chirashi_name"] == cname)
+                                & (cust_df["order_count"] == oc)
+                            ]["customer_id"].drop_duplicates()
+                            cols[1].download_button(
+                                f"投函顧客 ({len(d_ids)}件)",
+                                df_to_csv_bytes(d_ids.to_frame(), header=["顧客ID"]),
+                                f"{cname}_{display_f}_投函顧客.csv",
+                                key=f"dl_d_{cname}_{oc}",
+                            )
+
+                            # 切替顧客
+                            s_ids = cust_df[
+                                (cust_df["type"] == "switch")
+                                & (cust_df["chirashi_name"] == cname)
+                                & (cust_df["order_count"] == oc)
+                            ]["customer_id"].drop_duplicates()
+                            cols[2].download_button(
+                                f"切替顧客 ({len(s_ids)}件)",
+                                df_to_csv_bytes(s_ids.to_frame(), header=["顧客ID"]),
+                                f"{cname}_{display_f}_切替顧客.csv",
+                                key=f"dl_s_{cname}_{oc}",
+                            )
         else:
             st.info("F転換率データがありません。")
 
@@ -171,7 +224,7 @@ with tab_retention:
     # チラシ名一覧を取得
     try:
         list_sql = build_chirashi_list_sql(company_key)
-        chirashi_df = execute_query(client, list_sql)
+        chirashi_df = _run_query(client, list_sql)
     except Exception as e:
         st.error(f"チラシ一覧の取得エラー: {e}")
         st.stop()
@@ -200,7 +253,7 @@ with tab_retention:
             company_key, chirashi_filter, max_days,
             order_date_from, order_date_to, pc_data,
         )
-        ret_df = execute_query(client, ret_sql)
+        ret_df = _run_query(client, ret_sql)
     except Exception as e:
         st.error(f"継続率クエリ実行エラー: {e}")
         st.stop()
@@ -248,7 +301,7 @@ with tab_retention:
             company_key, chirashi_filter,
             order_date_from, order_date_to, pc_data,
         )
-        unmatched_df = execute_query(client, unmatched_sql)
+        unmatched_df = _run_query(client, unmatched_sql)
     except Exception:
         unmatched_df = pd.DataFrame()
 

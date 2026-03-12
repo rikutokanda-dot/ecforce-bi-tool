@@ -4,6 +4,7 @@ PROJECT_ID = "ecforce-data"
 BQ_LOCATION = "asia-northeast1"
 MAX_RETENTION_MONTHS = 24
 LTV_PERIOD_DAYS = 365
+PROCESSING_BUFFER_DAYS = 10  # 定期受注作成日から1回目出荷・解決までの猶予日数
 
 
 class Col:

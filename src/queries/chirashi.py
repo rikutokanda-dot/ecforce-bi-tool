@@ -260,6 +260,101 @@ ORDER BY 1, 2
 """
 
 
+def build_chirashi_frequency_customers_sql(
+    company_key: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> str:
+    """F(回数)別の顧客ID一覧を取得するSQL.
+
+    投函数・切替数それぞれの顧客IDをCSV出力用に返す。
+
+    Returns:
+        SQL文字列。結果カラム:
+        type ('delivery'|'switch'), chirashi_name, order_count, customer_id
+    """
+    chirashi = _chirashi_ref(company_key)
+    config = _config_ref(company_key)
+    integrated = _integrated_ref(company_key)
+    df = _date_filter(date_from, date_to)
+
+    return f"""
+WITH chirashi_orders AS (
+  SELECT
+    c.chirashi_name,
+    a.`{Col.CUSTOMER_ID}` AS customer_id,
+    SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) AS order_count,
+    cfg.target_product
+  FROM {chirashi} c
+  JOIN {config} cfg
+    ON c.chirashi_name = cfg.chirashi_name
+    AND cfg.company = '{company_key}'
+  JOIN {integrated} a
+    ON c.chirashi_order_number = a.`受注_受注番号`
+  WHERE cfg.target_product IS NOT NULL
+    AND TRIM(cfg.target_product) != ''
+    AND a.`{Col.ORDER_STATUS}` = 'shipped'{df}
+),
+
+chirashi_recipients AS (
+  SELECT
+    chirashi_name,
+    customer_id,
+    MIN(order_count) AS chirashi_order_count,
+    ANY_VALUE(target_product) AS target_product
+  FROM chirashi_orders
+  GROUP BY 1, 2
+),
+
+customer_orders AS (
+  SELECT
+    cr.chirashi_name,
+    cr.customer_id,
+    cr.chirashi_order_count,
+    cr.target_product,
+    SAFE_CAST(a.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) AS order_count,
+    a.`{Col.PRODUCT_NAME}` AS order_product_name
+  FROM chirashi_recipients cr
+  JOIN {integrated} a
+    ON cr.customer_id = a.`{Col.CUSTOMER_ID}`
+  WHERE a.`{Col.ORDER_STATUS}` = 'shipped'
+),
+
+first_switch AS (
+  SELECT
+    chirashi_name,
+    customer_id,
+    MIN(order_count) AS switch_order_count
+  FROM customer_orders
+  WHERE order_count > chirashi_order_count
+    AND EXISTS (
+      SELECT 1 FROM UNNEST(SPLIT(target_product, ',')) AS tp
+      WHERE STRPOS(order_product_name, TRIM(tp)) > 0
+    )
+  GROUP BY 1, 2
+),
+
+attributed AS (
+  SELECT
+    co.chirashi_name,
+    fs.customer_id,
+    MAX(co.order_count) AS attributed_chirashi_order
+  FROM chirashi_orders co
+  JOIN first_switch fs
+    ON co.chirashi_name = fs.chirashi_name
+    AND co.customer_id = fs.customer_id
+    AND co.order_count < fs.switch_order_count
+  GROUP BY 1, 2
+)
+
+SELECT 'delivery' AS type, chirashi_name, order_count, customer_id
+FROM chirashi_orders
+UNION ALL
+SELECT 'switch' AS type, chirashi_name, attributed_chirashi_order AS order_count, customer_id
+FROM attributed
+"""
+
+
 def _product_cycles_cte(product_cycles: dict | None) -> tuple[str, int]:
     """商品サイクルマスタをSQL CTEとして生成.
 

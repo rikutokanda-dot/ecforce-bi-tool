@@ -688,21 +688,25 @@ def compute_month_end_mask(
     product_name: str,
     data_cutoff_date: date,
 ) -> int:
-    """コホート月末日基準でデータが揃っている最大回数を計算.
+    """コホート月のデータが揃っている最大回数を計算.
 
-    コホート月の最終日(例: 12/31)に購入した顧客が
-    N回目の出荷予定日を迎えているかを判定する。
-    月末購入者が到達していれば、そのコホート月の全員分のデータが揃っている。
+    各N回目について「月初日の顧客がN回目データを持っているか」で判定する。
+    月初の顧客がN回目到達していれば、少なくとも一部の顧客のデータが揃っている。
 
-    1回目 = 購入日(月末日) に出荷 → コホート月内
-    2回目 = 購入日 + cycle1 日後
-    3回目 = 2回目 + cycle2 日後
-    ...
+    eligible_before = cutoff - PROCESSING_BUFFER_DAYS (10日)
+    N回目のeligible閾値 = eligible_before - Σcycles(1..N-1)
+    表示条件: month_start <= eligible閾値
+
+    例 (cutoff=2/28, buffer=10, cycle=30):
+      eligible_before = 2/18
+      1回目: month_start <= 2/18 → 2月(2/1 ≤ 2/18 ✓)
+      2回目: month_start <= 2/18-30 = 1/19 → 1月(1/1 ≤ 1/19 ✓), 2月(2/1 > 1/19 ✗)
+      3回目: month_start <= 2/18-60 = 12/20 → 12月(12/1 ≤ 12/20 ✓), 1月(1/1 > 12/20 ✗)
 
     Returns:
-        データが完全に揃っている最大の回数N。0ならデータなし。
+        データが（少なくとも一部）揃っている最大の回数N。0ならデータなし。
     """
-    import calendar
+    from src.constants import PROCESSING_BUFFER_DAYS
 
     cycle1, cycle2 = get_product_cycle(product_name)
 
@@ -711,36 +715,35 @@ def compute_month_end_mask(
         return 0
     year, month = int(parts[0]), int(parts[1])
 
-    # コホート月の最終日 (例: 12月 → 12/31)
-    last_day = calendar.monthrange(year, month)[1]
-    purchase_date = date(year, month, last_day)
-
-    # cutoff日をその月の末日に切り上げ
-    # (例: cutoff=12/30 → 12/31とみなす。同月内なら誤差は無視)
-    cutoff_last_day = calendar.monthrange(
-        data_cutoff_date.year, data_cutoff_date.month
-    )[1]
-    effective_cutoff = date(
-        data_cutoff_date.year, data_cutoff_date.month, cutoff_last_day
-    )
-
-    # 1回目 = 購入日に出荷（コホート月内）
-    if purchase_date <= effective_cutoff:
-        max_count = 1
+    # pd.Timestamp / datetime → datetime.date に統一（比較エラー防止）
+    if hasattr(data_cutoff_date, "date") and callable(data_cutoff_date.date):
+        effective_cutoff = data_cutoff_date.date()
     else:
-        return 0
+        effective_cutoff = data_cutoff_date
 
-    # 2回目 = 購入日 + cycle1 日後
-    ship_date = purchase_date + timedelta(days=cycle1)
-    if ship_date <= effective_cutoff:
+    # eligible_before: SQL側でこの日以前の作成日のみを対象にしている
+    eligible_before = effective_cutoff - timedelta(days=PROCESSING_BUFFER_DAYS)
+
+    month_start = date(year, month, 1)
+
+    # 1回目: month_start <= eligible_before
+    if month_start > eligible_before:
+        return 0
+    max_count = 1
+
+    # 2回目: month_start <= eligible_before - cycle1
+    threshold = eligible_before - timedelta(days=cycle1)
+    if month_start <= threshold:
         max_count = 2
     else:
         return max_count
 
-    # 3回目以降
+    # 3回目以降: eligible_before - (cycle1 + cycle2*(N-2))
+    cumulative_cycle = cycle1
     for i in range(3, MAX_RETENTION_MONTHS + 1):
-        ship_date = ship_date + timedelta(days=cycle2)
-        if ship_date <= effective_cutoff:
+        cumulative_cycle += cycle2
+        threshold = eligible_before - timedelta(days=cumulative_cycle)
+        if month_start <= threshold:
             max_count = i
         else:
             break
