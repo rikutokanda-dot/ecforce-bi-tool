@@ -324,6 +324,13 @@ filter_params = dict(
     product_names=filters["product_names"],
 )
 
+# 選択商品のサイクル値を取得
+_selected_pnames = filters.get("product_names")
+if _selected_pnames and len(_selected_pnames) == 1:
+    _global_cycle1, _global_cycle2 = get_product_cycle(_selected_pnames[0])
+else:
+    _global_cycle1, _global_cycle2 = 30, 30
+
 # データ最終日を取得
 try:
     max_date_df = execute_query(client, build_max_date_sql(company_key))
@@ -340,6 +347,15 @@ try:
 except Exception as e:
     st.warning(f"データカットオフ日取得エラー: {e}")
     data_cutoff_date = date.today()
+
+# コホートSQL用の追加パラメータ (継続率の時間適格チェック)
+_cutoff_str = data_cutoff_date.strftime("%Y-%m-%d")
+cohort_params = {
+    **filter_params,
+    "cycle1": _global_cycle1,
+    "cycle2": _global_cycle2,
+    "cutoff_date": _cutoff_str,
+}
 
 
 # =====================================================================
@@ -366,7 +382,7 @@ with main_tab_drilldown:
             st.info("フィルタを設定して「表示する」を押してください。")
         else:
             dd_sql = build_drilldown_sql(
-                drilldown_column=Col.SUBSCRIPTION_PRODUCT_NAME, **filter_params
+                drilldown_column=Col.SUBSCRIPTION_PRODUCT_NAME, **cohort_params
             )
             try:
                 dd_df = execute_query(client, dd_sql)
@@ -430,7 +446,7 @@ with main_tab_drilldown:
             st.info("フィルタを設定して「表示する」を押してください。")
         else:
             dd_sql_ag = build_drilldown_sql(
-                drilldown_column=Col.AD_GROUP, **filter_params
+                drilldown_column=Col.AD_GROUP, **cohort_params
             )
             try:
                 dd_df_ag = execute_query(client, dd_sql_ag)
@@ -460,7 +476,7 @@ with main_tab_drilldown:
             st.info("フィルタを設定して「表示する」を押してください。")
         else:
             dd_sql_au = build_drilldown_sql(
-                drilldown_column=Col.AD_URL_PARAM, **filter_params
+                drilldown_column=Col.AD_URL_PARAM, **cohort_params
             )
             try:
                 dd_df_au = execute_query(client, dd_sql_au)
@@ -490,7 +506,7 @@ with main_tab_drilldown:
             st.info("フィルタを設定して「表示する」を押してください。")
         else:
             dd_sql_cat = build_drilldown_sql(
-                drilldown_column=Col.PRODUCT_CATEGORY, **filter_params
+                drilldown_column=Col.PRODUCT_CATEGORY, **cohort_params
             )
             try:
                 dd_df_cat = execute_query(client, dd_sql_cat)
@@ -539,7 +555,7 @@ with main_tab_aggregate:
     elif not st.button("表示する", key="btn_aggregate", type="primary"):
         st.info("フィルタを設定して「表示する」を押してください。")
     else:
-        agg_sql = build_aggregate_cohort_sql(**filter_params)
+        agg_sql = build_aggregate_cohort_sql(**cohort_params)
         try:
             agg_df = execute_query(client, agg_sql)
         except Exception as e:
@@ -560,7 +576,7 @@ with main_tab_aggregate:
                 try:
                     _agg_dd_sql = build_drilldown_sql(
                         drilldown_column=Col.SUBSCRIPTION_PRODUCT_NAME,
-                        **filter_params,
+                        **cohort_params,
                     )
                     _agg_dd_df = execute_query(client, _agg_dd_sql)
                 except Exception:
@@ -721,7 +737,7 @@ with main_tab_monthly:
     elif not st.button("表示する", key="btn_monthly", type="primary"):
         st.info("フィルタを設定して「表示する」を押してください。")
     else:
-        monthly_sql = build_cohort_sql(**filter_params)
+        monthly_sql = build_cohort_sql(**cohort_params)
         try:
             monthly_df = execute_query(client, monthly_sql)
         except Exception as e:

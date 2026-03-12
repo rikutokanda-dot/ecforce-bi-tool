@@ -13,6 +13,69 @@ from __future__ import annotations
 from src.constants import Col, LogicalSeq, MAX_RETENTION_MONTHS, Status
 from src.queries.common import build_filter_clause, get_table_ref
 
+# 1回目分母から除外するステータスのSQL IN句
+_EXCLUDED_STATUS_IN = ", ".join(f"'{s}'" for s in Status.COHORT_EXCLUDED_STATUSES)
+
+
+# =====================================================================
+# ヘルパー: retained / denom / revenue カラム生成
+# =====================================================================
+
+def _build_select_columns(
+    cycle1: int,
+    cycle2: int,
+    cutoff_date: str | None,
+    include_revenue: bool = False,
+) -> str:
+    """retained/denom/revenue カラムのSELECT式を構築.
+
+    継続率の定義:
+      1回目: 分母=total_users, 分子=shipped+completedの1回目
+      N回目(N≥2): 時間適格チェック付き
+        分母(denom_N) = 定期受注作成日+10+cycle1+cycle2*(N-2) < cutoff かつ N-1回目shipped+completed
+        分子(retained_N) = 同条件 かつ N回目shipped+completed
+    """
+    parts: list[str] = []
+
+    # -- 1回目: 時間適格チェックなし --
+    parts.append(
+        f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1,"
+        f" t1.customer_id, NULL)) AS retained_1"
+    )
+    if include_revenue:
+        parts.append(
+            f"SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1,"
+            f" SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_1"
+        )
+
+    # -- 2回目以降: 時間適格チェック付き --
+    for i in range(2, MAX_RETENTION_MONTHS + 1):
+        offset = 10 + cycle1 + cycle2 * (i - 2)
+        tc = ""
+        if cutoff_date:
+            tc = (
+                f"\n          AND DATE_ADD(DATE(t1.subscription_created_at),"
+                f" INTERVAL {offset} DAY) < DATE('{cutoff_date}')"
+            )
+
+        # retained_i: 時間適格 かつ i回目 shipped+completed
+        parts.append(
+            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{tc},"
+            f" t1.customer_id, NULL)) AS retained_{i}"
+        )
+        if include_revenue:
+            parts.append(
+                f"SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{tc},"
+                f" SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_{i}"
+            )
+        # denom_i: 時間適格 かつ (i-1)回目 shipped+completed (継続率の分母)
+        parts.append(
+            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i - 1}{tc},"
+            f" t1.customer_id, NULL)) AS denom_{i}"
+        )
+
+    return ",\n      ".join(parts)
+
 
 def build_cohort_sql(
     company_key: str,
@@ -21,6 +84,9 @@ def build_cohort_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
+    cycle1: int = 30,
+    cycle2: int = 30,
+    cutoff_date: str | None = None,
 ) -> str:
     """通常コホート分析SQL (月別)."""
     table = get_table_ref(company_key)
@@ -32,10 +98,7 @@ def build_cohort_sql(
         product_names=product_names,
     )
 
-    retained_columns = ",\n      ".join(
-        f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i}"
-        for i in range(1, MAX_RETENTION_MONTHS + 1)
-    )
+    retained_columns = _build_select_columns(cycle1, cycle2, cutoff_date)
 
     return f"""
     WITH
@@ -43,6 +106,7 @@ def build_cohort_sql(
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
+        MIN(SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS subscription_created_at,
         FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
@@ -51,6 +115,7 @@ def build_cohort_sql(
       {filters}
       GROUP BY customer_id, first_product_name, cohort_month
       HAVING has_entry_data = 1 AND has_logic_2 = 0
+        AND MAX(IF(`{Col.ORDER_STATUS}` NOT IN ({_EXCLUDED_STATUS_IN}), 1, 0)) = 1
     )
     SELECT
       t1.cohort_month,
@@ -77,6 +142,9 @@ def build_drilldown_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
+    cycle1: int = 30,
+    cycle2: int = 30,
+    cutoff_date: str | None = None,
 ) -> str:
     """ドリルダウン分析SQL (商品名別、広告グループ別、商品カテゴリ別).
 
@@ -93,18 +161,9 @@ def build_drilldown_sql(
 
     # 定期商品名の場合 revenue も取得
     is_product_drilldown = drilldown_column == Col.SUBSCRIPTION_PRODUCT_NAME
-
-    if is_product_drilldown:
-        retained_columns = ",\n      ".join(
-            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
-            f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_{i}"
-            for i in range(1, MAX_RETENTION_MONTHS + 1)
-        )
-    else:
-        retained_columns = ",\n      ".join(
-            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i}"
-            for i in range(1, MAX_RETENTION_MONTHS + 1)
-        )
+    retained_columns = _build_select_columns(
+        cycle1, cycle2, cutoff_date, include_revenue=is_product_drilldown,
+    )
 
     return f"""
     WITH
@@ -113,6 +172,7 @@ def build_drilldown_sql(
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
         `{drilldown_column}` AS dimension_col,
+        MIN(SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS subscription_created_at,
         FORMAT_TIMESTAMP('%Y-%m', SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS cohort_month,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
@@ -123,6 +183,7 @@ def build_drilldown_sql(
       AND `{drilldown_column}` != ''
       GROUP BY customer_id, first_product_name, dimension_col, cohort_month
       HAVING has_entry_data = 1 AND has_logic_2 = 0
+        AND MAX(IF(`{Col.ORDER_STATUS}` NOT IN ({_EXCLUDED_STATUS_IN}), 1, 0)) = 1
     )
     SELECT
       t1.dimension_col,
@@ -149,6 +210,9 @@ def build_aggregate_cohort_sql(
     product_categories: list[str] | None = None,
     ad_groups: list[str] | None = None,
     product_names: list[str] | None = None,
+    cycle1: int = 30,
+    cycle2: int = 30,
+    cutoff_date: str | None = None,
 ) -> str:
     """通算コホート分析SQL.
 
@@ -164,10 +228,8 @@ def build_aggregate_cohort_sql(
         product_names=product_names,
     )
 
-    retained_cols = ",\n      ".join(
-        f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, t1.customer_id, NULL)) AS retained_{i},\n"
-        f"      SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_{i}"
-        for i in range(1, MAX_RETENTION_MONTHS + 1)
+    retained_cols = _build_select_columns(
+        cycle1, cycle2, cutoff_date, include_revenue=True,
     )
 
     return f"""
@@ -176,6 +238,7 @@ def build_aggregate_cohort_sql(
       SELECT
         `{Col.CUSTOMER_ID}` AS customer_id,
         `{Col.SUBSCRIPTION_PRODUCT_NAME}` AS first_product_name,
+        MIN(SAFE_CAST(`{Col.SUBSCRIPTION_CREATED_AT}` AS TIMESTAMP)) AS subscription_created_at,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.REPROCESS}, 1, 0)) AS has_logic_2,
         MAX(IF(SAFE_CAST(`{Col.ORDER_LOGICAL_SEQ}` AS INT64) = {LogicalSeq.FIRST} OR `{Col.ORDER_LOGICAL_SEQ}` IS NULL, 1, 0)) AS has_entry_data
       FROM {table}
@@ -183,6 +246,7 @@ def build_aggregate_cohort_sql(
       {filters}
       GROUP BY customer_id, first_product_name
       HAVING has_entry_data = 1 AND has_logic_2 = 0
+        AND MAX(IF(`{Col.ORDER_STATUS}` NOT IN ({_EXCLUDED_STATUS_IN}), 1, 0)) = 1
     )
     SELECT
       COUNT(DISTINCT t1.customer_id) AS total_users,

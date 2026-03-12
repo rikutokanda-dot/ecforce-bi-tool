@@ -48,7 +48,7 @@ class Status:
         "shipped_notarrived",   # 発送完了（未着）
     )
 
-    # 0回目（受注が立った人）から除外するステータス
+    # 1回目分母から除外するステータス
     COHORT_EXCLUDED_STATUSES = (
         "complete",                    # 注文確定
         "reserved",                    # 予約販売 / 予約
@@ -64,6 +64,7 @@ class Status:
         "cc_phoneisnotconnected",      # キャンセル（CC_RD）
         "doc_breakaway",               # キャンセル（Doc_FT）
         "doc_phoneisnotconnected",     # キャンセル（Doc_RD）
+        "キャンセル_既存定期再開",       # キャンセル_既存定期再開
     )
 
     # 返品率分析用: 返品（分子）に含む対応状況
