@@ -478,8 +478,8 @@ def build_upsell_rate_sql(
         AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
     )
     SELECT
-      nu.numerator_count,
-      de.denominator_count,
+      nu.numerator_count AS upsell_count,
+      de.denominator_count AS normal_count,
       ep.eff_start AS period_start,
       ep.eff_end AS period_end,
       SAFE_DIVIDE(nu.numerator_count, de.denominator_count) * 100 AS upsell_rate
@@ -564,8 +564,8 @@ def build_upsell_rate_monthly_sql(
     )
     SELECT
       COALESCE(nu.cohort_month, de.cohort_month) AS cohort_month,
-      IFNULL(nu.numerator_count, 0) AS numerator_count,
-      IFNULL(de.denominator_count, 0) AS denominator_count,
+      IFNULL(nu.numerator_count, 0) AS upsell_count,
+      IFNULL(de.denominator_count, 0) AS normal_count,
       SAFE_DIVIDE(
         IFNULL(nu.numerator_count, 0),
         IFNULL(de.denominator_count, 0)
