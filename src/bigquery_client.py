@@ -37,6 +37,15 @@ def execute_query(_client: bigquery.Client, query: str) -> pd.DataFrame:
     return _client.query(query).to_dataframe()
 
 
+def execute_query_no_cache(_client: bigquery.Client, query: str) -> pd.DataFrame:
+    """キャッシュなしクエリ実行（BQクエリキャッシュも無効化）.
+
+    スプシ連携の外部テーブルなど、最新データが必要な場合に使用。
+    """
+    job_config = bigquery.QueryJobConfig(use_query_cache=False)
+    return _client.query(query, job_config=job_config).to_dataframe()
+
+
 def fetch_filter_options(
     _client: bigquery.Client, table_ref: str, column: str
 ) -> list[str]:

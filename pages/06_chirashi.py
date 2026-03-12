@@ -37,6 +37,11 @@ if not company_key:
 
 client = get_bigquery_client()
 
+# キャッシュクリア（スプシ更新後に押す）
+if st.button("🔄 スプシ再取得（キャッシュクリア）", key="chirashi_cache_clear"):
+    st.cache_data.clear()
+    st.rerun()
+
 # サイドバーの受注日フィルタを取得
 order_date_from = st.session_state.get(SessionKey.ORDER_DATE_FROM)
 order_date_to = st.session_state.get(SessionKey.ORDER_DATE_TO)
