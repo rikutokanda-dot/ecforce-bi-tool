@@ -50,7 +50,7 @@ def _build_select_columns(
 
     # -- 2回目以降: 時間適格チェック付き --
     for i in range(2, MAX_RETENTION_MONTHS + 1):
-        offset = 10 + cycle1 + cycle2 * (i - 2)
+        offset = int(10 + cycle1 + cycle2 * (i - 2))
         tc = ""
         if cutoff_date:
             tc = (
