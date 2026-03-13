@@ -18,8 +18,27 @@ _EXCLUDED_STATUS_IN = ", ".join(f"'{s}'" for s in Status.COHORT_EXCLUDED_STATUSE
 
 
 # =====================================================================
-# ヘルパー: retained / denom / revenue カラム生成
+# ヘルパー: customer_shipped CTE + 集計カラム生成
 # =====================================================================
+
+
+def _build_shipped_flags(include_revenue: bool = False) -> str:
+    """customer_shipped CTEのSELECT式を構築.
+
+    各回数について shipped_N (0/1) と revenue_N を顧客単位で集計する。
+    """
+    parts: list[str] = []
+    for i in range(1, MAX_RETENTION_MONTHS + 1):
+        parts.append(
+            f"MAX(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}, 1, 0)) AS shipped_{i}"
+        )
+        if include_revenue:
+            parts.append(
+                f"SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i},"
+                f" SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_{i}"
+            )
+    return ",\n      ".join(parts)
+
 
 def _build_select_columns(
     cycle1: int,
@@ -29,29 +48,30 @@ def _build_select_columns(
 ) -> str:
     """retained/denom/surv_denom/cont_num/revenue カラムのSELECT式を構築.
 
+    customer_shipped CTE (cs) に対して集計する。
+    cs は顧客1行で、shipped_1..shipped_12 フラグを持つ。
+
     残存率の定義:
-      1回目: 分母=total_users, 分子=shipped+completedの1回目
+      1回目: 分母=total_users, 分子=shipped_1=1の人数
       N回目(N≥2): 時間適格チェック付き (定期受注作成日+10ベース)
         分母(surv_denom_N) = 定期受注作成日+10+cycle1+cycle2*(N-2) < cutoff の人数
-        分子(retained_N)   = 同条件 かつ N回目shipped+completed
+        分子(retained_N)   = 同条件 かつ shipped_N=1
 
     継続率の定義:
-      1回目: 分母=total_users, 分子=shipped+completedの1回目
+      1回目: 分母=total_users, 分子=shipped_1=1の人数
       N回目(N≥2): 時間適格チェック付き (1回目売上日ベース)
-        分母(denom_N)    = 1回目売上日+cycle1+cycle2*(N-2) < cutoff かつ N-1回目shipped+completed
-        分子(cont_num_N) = 同条件 かつ N回目shipped+completed
+        分母(denom_N)    = 1回目売上日+cycle1+cycle2*(N-2) < cutoff かつ shipped_{N-1}=1
+        分子(cont_num_N) = 同条件 かつ shipped_{N-1}=1 かつ shipped_N=1
     """
     parts: list[str] = []
 
     # -- 1回目: 時間適格チェックなし --
     parts.append(
-        f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1,"
-        f" t1.customer_id, NULL)) AS retained_1"
+        "COUNT(DISTINCT IF(cs.shipped_1 = 1, cs.customer_id, NULL)) AS retained_1"
     )
     if include_revenue:
         parts.append(
-            f"SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = 1,"
-            f" SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_1"
+            "SUM(IF(cs.shipped_1 = 1, cs.revenue_1, 0)) AS revenue_1"
         )
 
     # -- 2回目以降: 残存率用(定期受注作成日+10) + 継続率用(1回目売上日) --
@@ -63,7 +83,7 @@ def _build_select_columns(
         surv_tc = ""
         if cutoff_date:
             surv_tc = (
-                f"\n          AND DATE_ADD(DATE(t1.subscription_created_at),"
+                f"\n          AND DATE_ADD(DATE(cs.subscription_created_at),"
                 f" INTERVAL {surv_offset} DAY) < DATE('{cutoff_date}')"
             )
 
@@ -71,7 +91,7 @@ def _build_select_columns(
         cont_tc = ""
         if cutoff_date:
             cont_tc = (
-                f"\n          AND DATE_ADD(DATE(t1.first_sales_date),"
+                f"\n          AND DATE_ADD(DATE(cs.first_sales_date),"
                 f" INTERVAL {cont_offset} DAY) < DATE('{cutoff_date}')"
             )
 
@@ -79,30 +99,29 @@ def _build_select_columns(
         # surv_denom_i: 残存率の分母 (定期受注作成日+10ベースで時間適格な人数)
         parts.append(
             f"COUNT(DISTINCT IF(1=1{surv_tc},"
-            f" t1.customer_id, NULL)) AS surv_denom_{i}"
+            f" cs.customer_id, NULL)) AS surv_denom_{i}"
         )
-        # retained_i: 残存率の分子 (同時間チェック かつ i回目 shipped+completed)
+        # retained_i: 残存率の分子 (同時間チェック かつ shipped_i=1)
         parts.append(
-            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{surv_tc},"
-            f" t1.customer_id, NULL)) AS retained_{i}"
+            f"COUNT(DISTINCT IF(cs.shipped_{i} = 1{surv_tc},"
+            f" cs.customer_id, NULL)) AS retained_{i}"
         )
 
         # --- 継続率カラム ---
         # denom_i: 継続率の分母 (1回目売上日ベースで時間適格 かつ N-1回目shipped)
         parts.append(
-            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i - 1}{cont_tc},"
-            f" t1.customer_id, NULL)) AS denom_{i}"
+            f"COUNT(DISTINCT IF(cs.shipped_{i - 1} = 1{cont_tc},"
+            f" cs.customer_id, NULL)) AS denom_{i}"
         )
-        # cont_num_i: 継続率の分子 (1回目売上日ベースで時間適格 かつ N回目shipped)
+        # cont_num_i: 継続率の分子 (同条件 かつ N-1回目shipped かつ N回目shipped)
         parts.append(
-            f"COUNT(DISTINCT IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{cont_tc},"
-            f" t1.customer_id, NULL)) AS cont_num_{i}"
+            f"COUNT(DISTINCT IF(cs.shipped_{i - 1} = 1 AND cs.shipped_{i} = 1{cont_tc},"
+            f" cs.customer_id, NULL)) AS cont_num_{i}"
         )
 
         if include_revenue:
             parts.append(
-                f"SUM(IF(SAFE_CAST(t2.`{Col.ORDER_SUBSCRIPTION_COUNT}` AS INT64) = {i}{surv_tc},"
-                f" SAFE_CAST(t2.`{Col.PAYMENT_AMOUNT}` AS FLOAT64), 0)) AS revenue_{i}"
+                f"SUM(IF(cs.shipped_{i} = 1{surv_tc}, cs.revenue_{i}, 0)) AS revenue_{i}"
             )
 
     return ",\n      ".join(parts)
@@ -131,7 +150,8 @@ def build_cohort_sql(
         eligible_before=eligible_before,
     )
 
-    retained_columns = _build_select_columns(cycle1, cycle2, cutoff_date)
+    shipped_flags = _build_shipped_flags()
+    select_columns = _build_select_columns(cycle1, cycle2, cutoff_date)
 
     return f"""
     WITH
@@ -151,21 +171,29 @@ def build_cohort_sql(
       GROUP BY customer_id, first_product_name, cohort_month
       HAVING has_entry_data = 1 AND has_logic_2 = 0
         AND MAX(IF(`{Col.ORDER_STATUS}` NOT IN ({_EXCLUDED_STATUS_IN}), 1, 0)) = 1
+    ),
+    customer_shipped AS (
+      SELECT
+        t1.customer_id,
+        t1.subscription_created_at,
+        t1.first_sales_date,
+        t1.cohort_month,
+        {shipped_flags}
+      FROM cohort_base AS t1
+      LEFT JOIN {table} AS t2
+        ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
+        AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
+        AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+      GROUP BY t1.customer_id, t1.subscription_created_at, t1.first_sales_date, t1.cohort_month
     )
     SELECT
-      t1.cohort_month,
-      COUNT(DISTINCT t1.customer_id) AS total_users,
-      {retained_columns}
-    FROM
-      cohort_base AS t1
-    LEFT JOIN
-      {table} AS t2
-      ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
-      AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
-      AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
-      AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
-    GROUP BY cohort_month
-    ORDER BY cohort_month
+      cs.cohort_month,
+      COUNT(DISTINCT cs.customer_id) AS total_users,
+      {select_columns}
+    FROM customer_shipped AS cs
+    GROUP BY cs.cohort_month
+    ORDER BY cs.cohort_month
     """
 
 
@@ -198,7 +226,8 @@ def build_drilldown_sql(
 
     # 定期商品名の場合 revenue も取得
     is_product_drilldown = drilldown_column == Col.SUBSCRIPTION_PRODUCT_NAME
-    retained_columns = _build_select_columns(
+    shipped_flags = _build_shipped_flags(include_revenue=is_product_drilldown)
+    select_columns = _build_select_columns(
         cycle1, cycle2, cutoff_date, include_revenue=is_product_drilldown,
     )
 
@@ -223,20 +252,29 @@ def build_drilldown_sql(
       GROUP BY customer_id, first_product_name, dimension_col, cohort_month
       HAVING has_entry_data = 1 AND has_logic_2 = 0
         AND MAX(IF(`{Col.ORDER_STATUS}` NOT IN ({_EXCLUDED_STATUS_IN}), 1, 0)) = 1
+    ),
+    customer_shipped AS (
+      SELECT
+        t1.customer_id,
+        t1.dimension_col,
+        t1.subscription_created_at,
+        t1.first_sales_date,
+        t1.cohort_month,
+        {shipped_flags}
+      FROM cohort_base AS t1
+      LEFT JOIN {table} AS t2
+        ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
+        AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
+        AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+      GROUP BY t1.customer_id, t1.dimension_col, t1.subscription_created_at, t1.first_sales_date, t1.cohort_month
     )
     SELECT
-      t1.dimension_col,
-      t1.cohort_month,
-      COUNT(DISTINCT t1.customer_id) AS total_users,
-      {retained_columns}
-    FROM
-      cohort_base AS t1
-    LEFT JOIN
-      {table} AS t2
-      ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
-      AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
-      AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
-      AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+      cs.dimension_col,
+      cs.cohort_month,
+      COUNT(DISTINCT cs.customer_id) AS total_users,
+      {select_columns}
+    FROM customer_shipped AS cs
     GROUP BY 1, 2
     ORDER BY 1, 2
     """
@@ -349,7 +387,8 @@ def build_aggregate_cohort_sql(
         eligible_before=eligible_before,
     )
 
-    retained_cols = _build_select_columns(
+    shipped_flags = _build_shipped_flags(include_revenue=True)
+    select_columns = _build_select_columns(
         cycle1, cycle2, cutoff_date, include_revenue=True,
     )
 
@@ -370,18 +409,25 @@ def build_aggregate_cohort_sql(
       GROUP BY customer_id, first_product_name
       HAVING has_entry_data = 1 AND has_logic_2 = 0
         AND MAX(IF(`{Col.ORDER_STATUS}` NOT IN ({_EXCLUDED_STATUS_IN}), 1, 0)) = 1
+    ),
+    customer_shipped AS (
+      SELECT
+        t1.customer_id,
+        t1.subscription_created_at,
+        t1.first_sales_date,
+        {shipped_flags}
+      FROM cohort_base AS t1
+      LEFT JOIN {table} AS t2
+        ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
+        AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
+        AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
+        AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+      GROUP BY t1.customer_id, t1.subscription_created_at, t1.first_sales_date
     )
     SELECT
-      COUNT(DISTINCT t1.customer_id) AS total_users,
-      {retained_cols}
-    FROM
-      cohort_base AS t1
-    LEFT JOIN
-      {table} AS t2
-      ON t1.customer_id = t2.`{Col.CUSTOMER_ID}`
-      AND t2.`{Col.SUBSCRIPTION_PRODUCT_NAME}` = t1.first_product_name
-      AND t2.`{Col.ORDER_STATUS}` = '{Status.SHIPPED}'
-      AND t2.`{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
+      COUNT(DISTINCT cs.customer_id) AS total_users,
+      {select_columns}
+    FROM customer_shipped AS cs
     """
 
 
