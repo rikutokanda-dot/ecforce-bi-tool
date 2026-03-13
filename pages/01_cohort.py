@@ -156,6 +156,7 @@ def _upsell_pair_fragment(
         query_from = date_from_str
         query_to = date_to_str
 
+    _no_period_ref = not period_ref_names
     _uf = upsell_filters or {}
     sql = build_upsell_rate_sql(
         company_key, numerator_names, denominator_names, period_ref_names,
@@ -180,6 +181,8 @@ def _upsell_pair_fragment(
                         unsafe_allow_html=True)
             st.divider()
             return
+        if _no_period_ref:
+            st.warning("⚠️ デフォルト期間が未設定です。分母商品の期間で代用しています。マスタ管理で「期間デフォルト」を設定してください。")
         rate = round(float(_rate_val), 1)
         normal_count = int(pd.to_numeric(row.get("normal_count", 0), errors="coerce") or 0)
         upsell_count = int(pd.to_numeric(row.get("upsell_count", 0), errors="coerce") or 0)
@@ -234,6 +237,7 @@ def _render_upsell_monthly(
     _num_display = ", ".join(numerator_names)
     _denom_display = ", ".join(denominator_names)
 
+    _no_period_ref = not period_ref_names
     _uf = upsell_filters or {}
     sql = build_upsell_rate_monthly_sql(
         company_key, numerator_names, denominator_names, period_ref_names,
@@ -249,6 +253,9 @@ def _render_upsell_monthly(
             st.markdown(label_md)
             st.info("データなし")
             return
+
+        if _no_period_ref:
+            st.warning("⚠️ デフォルト期間が未設定です。分母商品の期間で代用しています。マスタ管理で「期間デフォルト」を設定してください。")
 
         display_df = df[["cohort_month", "normal_count", "upsell_count", "upsell_rate"]].copy()
         display_df.columns = ["月", "分母(人)", "分子(人)", "アップセル率(%)"]
