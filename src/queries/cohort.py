@@ -444,6 +444,19 @@ def build_upsell_sql(
     """
 
 
+def _build_upsell_extra_filter(
+    product_categories: list[str] | None = None,
+    ad_groups: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
+) -> str:
+    """アップセルSQL用の追加フィルタ句を構築（product_namesは除外）."""
+    return build_filter_clause(
+        product_categories=product_categories,
+        ad_groups=ad_groups,
+        ad_url_params=ad_url_params,
+    )
+
+
 def build_upsell_rate_sql(
     company_key: str,
     numerator_names: list[str],
@@ -451,6 +464,10 @@ def build_upsell_rate_sql(
     period_ref_names: list[str],
     date_from: str | None = None,
     date_to: str | None = None,
+    *,
+    product_categories: list[str] | None = None,
+    ad_groups: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
 ) -> str:
     """アップセル率計算SQL.
 
@@ -464,6 +481,8 @@ def build_upsell_rate_sql(
     numerator_in = ", ".join(f"'{n}'" for n in numerator_names)
     denominator_in = ", ".join(f"'{n}'" for n in denominator_names)
     period_ref_in = ", ".join(f"'{n}'" for n in period_ref_names)
+
+    extra = _build_upsell_extra_filter(product_categories, ad_groups, ad_url_params)
 
     # ユーザー日付フィルタとの交差期間計算
     period_start_expr = "p.period_start"
@@ -502,6 +521,7 @@ def build_upsell_rate_sql(
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
         AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
         AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+        {extra}
     ),
     denominator_first AS (
       SELECT COUNT(DISTINCT `{Col.CUSTOMER_ID}`) AS denominator_count
@@ -513,6 +533,7 @@ def build_upsell_rate_sql(
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
         AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
         AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+        {extra}
     )
     SELECT
       nu.numerator_count AS upsell_count,
@@ -533,6 +554,10 @@ def build_upsell_rate_monthly_sql(
     period_ref_names: list[str],
     date_from: str | None = None,
     date_to: str | None = None,
+    *,
+    product_categories: list[str] | None = None,
+    ad_groups: list[str] | None = None,
+    ad_url_params: list[str] | None = None,
 ) -> str:
     """月別アップセル率計算SQL.
 
@@ -544,6 +569,8 @@ def build_upsell_rate_monthly_sql(
     numerator_in = ", ".join(f"'{n}'" for n in numerator_names)
     denominator_in = ", ".join(f"'{n}'" for n in denominator_names)
     period_ref_in = ", ".join(f"'{n}'" for n in period_ref_names)
+
+    extra = _build_upsell_extra_filter(product_categories, ad_groups, ad_url_params)
 
     period_start_expr = "p.period_start"
     period_end_expr = "p.period_end"
@@ -583,6 +610,7 @@ def build_upsell_rate_monthly_sql(
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
         AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
         AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+        {extra}
       GROUP BY cohort_month
     ),
     monthly_denominator AS (
@@ -597,6 +625,7 @@ def build_upsell_rate_monthly_sql(
         AND `{Col.PAYMENT_STATUS}` = '{Status.COMPLETED}'
         AND `{Col.SUBSCRIPTION_CREATED_AT}` >= ep.eff_start
         AND `{Col.SUBSCRIPTION_CREATED_AT}` <= ep.eff_end
+        {extra}
       GROUP BY cohort_month
     )
     SELECT

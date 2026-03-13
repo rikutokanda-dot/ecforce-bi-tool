@@ -115,12 +115,14 @@ def _render_upsell_pair(
     date_to_str: str | None,
     *,
     pair_key: str = "",
+    upsell_filters: dict | None = None,
 ):
     """1組のアップセル率を表示."""
     _upsell_pair_fragment(
         client, company_key, numerator_names, denominator_names, period_ref_names,
         label_title, date_from_str, date_to_str,
         pair_key=pair_key,
+        upsell_filters=upsell_filters,
     )
 
 
@@ -136,6 +138,7 @@ def _upsell_pair_fragment(
     date_to_str: str | None,
     *,
     pair_key: str = "",
+    upsell_filters: dict | None = None,
 ):
     """フラグメント化されたアップセル率表示。日付変更時にこの部分だけ再実行。"""
     _num_display = ", ".join(numerator_names)
@@ -153,24 +156,35 @@ def _upsell_pair_fragment(
         query_from = date_from_str
         query_to = date_to_str
 
+    _uf = upsell_filters or {}
     sql = build_upsell_rate_sql(
         company_key, numerator_names, denominator_names, period_ref_names,
         query_from, query_to,
+        product_categories=_uf.get("product_categories"),
+        ad_groups=_uf.get("ad_groups"),
+        ad_url_params=_uf.get("ad_url_params"),
     )
     try:
         df = execute_query(client, sql)
-        if df.empty or df["upsell_rate"].iloc[0] is None:
+        if df.empty:
             st.markdown(f"**{label_title}**　データなし")
             st.markdown(f"<small>分母：{_denom_display}<br>分子：{_num_display}</small>",
                         unsafe_allow_html=True)
             st.divider()
             return
         row = df.iloc[0]
-        rate = round(float(row["upsell_rate"]), 1)
-        normal_count = int(row["normal_count"])
-        upsell_count = int(row["upsell_count"])
-        period_start = str(row["period_start"])[:10]
-        period_end = str(row["period_end"])[:10]
+        _rate_val = pd.to_numeric(row.get("upsell_rate"), errors="coerce")
+        if pd.isna(_rate_val):
+            st.markdown(f"**{label_title}**　データなし")
+            st.markdown(f"<small>分母：{_denom_display}<br>分子：{_num_display}</small>",
+                        unsafe_allow_html=True)
+            st.divider()
+            return
+        rate = round(float(_rate_val), 1)
+        normal_count = int(pd.to_numeric(row.get("normal_count", 0), errors="coerce") or 0)
+        upsell_count = int(pd.to_numeric(row.get("upsell_count", 0), errors="coerce") or 0)
+        period_start = str(row.get("period_start", ""))[:10]
+        period_end = str(row.get("period_end", ""))[:10]
 
         st.markdown(
             f"**{label_title}　{rate}%**　　分母: {normal_count:,}人 / 分子: {upsell_count:,}人"
@@ -180,9 +194,12 @@ def _upsell_pair_fragment(
             unsafe_allow_html=True,
         )
 
-        if not has_override:
-            st.session_state[_k_from] = date.fromisoformat(period_start)
-            st.session_state[_k_to] = date.fromisoformat(period_end)
+        if not has_override and period_start and period_end and len(period_start) == 10:
+            try:
+                st.session_state[_k_from] = date.fromisoformat(period_start)
+                st.session_state[_k_to] = date.fromisoformat(period_end)
+            except ValueError:
+                pass
 
         dcols = st.columns([1, 1])
         with dcols[0]:
@@ -210,14 +227,20 @@ def _render_upsell_monthly(
     label_title: str,
     date_from_str: str | None,
     date_to_str: str | None,
+    *,
+    upsell_filters: dict | None = None,
 ):
     """月別アップセル率テーブル+グラフを表示."""
     _num_display = ", ".join(numerator_names)
     _denom_display = ", ".join(denominator_names)
 
+    _uf = upsell_filters or {}
     sql = build_upsell_rate_monthly_sql(
         company_key, numerator_names, denominator_names, period_ref_names,
         date_from_str, date_to_str,
+        product_categories=_uf.get("product_categories"),
+        ad_groups=_uf.get("ad_groups"),
+        ad_url_params=_uf.get("ad_url_params"),
     )
     label_md = _upsell_label_html(label_title, _denom_display, _num_display)
     try:
@@ -904,31 +927,49 @@ with main_tab_monthly:
 with main_tab_upsell:
     _all_mappings_raw = load_upsell_mappings()
 
-    # サイドバーフィルタで対象マッピングを絞り込む
+    # 会社の商品リストを取得してマッピングをフィルタ
+    _upsell_table_ref = get_table_ref(company_key)
+    _company_products = set(
+        fetch_filtered_options(client, _upsell_table_ref, Col.SUBSCRIPTION_PRODUCT_NAME)
+    )
+
+    # 会社フィルタ: 分母商品が会社に存在するマッピングのみ
+    _company_mappings = [
+        m for m in _all_mappings_raw
+        if _company_products & (set(m.get("denominator_names", [])) | set(m.get("numerator_names", [])))
+    ]
+
+    # サイドバーフィルタで対象マッピングをさらに絞り込む
     _upsell_filter_pnames = filters.get("product_names")
     _upsell_filter_cats = filters.get("product_categories")
     if _upsell_filter_pnames:
         _pname_set = set(_upsell_filter_pnames)
         all_mappings = [
-            m for m in _all_mappings_raw
+            m for m in _company_mappings
             if _pname_set & set(m.get("denominator_names", []))
         ]
     elif _upsell_filter_cats:
-        _table_ref = get_table_ref(company_key)
         _cat_product_names = fetch_filtered_options(
-            client, _table_ref, Col.SUBSCRIPTION_PRODUCT_NAME,
+            client, _upsell_table_ref, Col.SUBSCRIPTION_PRODUCT_NAME,
             {Col.PRODUCT_CATEGORY: _upsell_filter_cats},
         )
         _cat_pname_set = set(_cat_product_names)
         all_mappings = [
-            m for m in _all_mappings_raw
+            m for m in _company_mappings
             if _cat_pname_set & set(m.get("denominator_names", []))
         ]
     else:
-        all_mappings = list(_all_mappings_raw)
+        all_mappings = list(_company_mappings)
 
-    if not _all_mappings_raw:
-        st.info("アップセルマッピングが設定されていません。マスタ管理で設定してください。")
+    # サイドバーフィルタをアップセルSQLに渡す
+    _upsell_sql_filters = {
+        "product_categories": filters.get("product_categories"),
+        "ad_groups": filters.get("ad_groups"),
+        "ad_url_params": filters.get("ad_url_params"),
+    }
+
+    if not _company_mappings:
+        st.info("この会社に該当するアップセルマッピングがありません。マスタ管理で設定してください。")
     elif not all_mappings:
         st.info("サイドバーで選択中の商品に該当するアップセルマッピングがありません。")
     else:
@@ -954,6 +995,7 @@ with main_tab_upsell:
                             label,
                             date_from_str, date_to_str,
                             pair_key=f"agg_{_gi}",
+                            upsell_filters=_upsell_sql_filters,
                         )
 
             with upsell_sub_monthly:
@@ -970,4 +1012,5 @@ with main_tab_upsell:
                             num, denom, pref,
                             label,
                             date_from_str, date_to_str,
+                            upsell_filters=_upsell_sql_filters,
                         )
