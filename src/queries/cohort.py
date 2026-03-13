@@ -526,7 +526,9 @@ def build_upsell_rate_sql(
 
     numerator_in = ", ".join(f"'{n}'" for n in numerator_names)
     denominator_in = ", ".join(f"'{n}'" for n in denominator_names)
-    period_ref_in = ", ".join(f"'{n}'" for n in period_ref_names)
+    # period_ref_namesが空の場合はdenominator_namesをフォールバック
+    _period_ref = period_ref_names if period_ref_names else denominator_names
+    period_ref_in = ", ".join(f"'{n}'" for n in _period_ref)
 
     extra = _build_upsell_extra_filter(product_categories, ad_groups, ad_url_params)
 
@@ -614,7 +616,9 @@ def build_upsell_rate_monthly_sql(
 
     numerator_in = ", ".join(f"'{n}'" for n in numerator_names)
     denominator_in = ", ".join(f"'{n}'" for n in denominator_names)
-    period_ref_in = ", ".join(f"'{n}'" for n in period_ref_names)
+    # period_ref_namesが空の場合はdenominator_namesをフォールバック
+    _period_ref = period_ref_names if period_ref_names else denominator_names
+    period_ref_in = ", ".join(f"'{n}'" for n in _period_ref)
 
     extra = _build_upsell_extra_filter(product_categories, ad_groups, ad_url_params)
 
